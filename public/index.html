@@ -1,9 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ClearPath · Command Server</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%230052FF'/><stop offset='100%25' stop-color='%234D7CFF'/></linearGradient></defs><rect width='100' height='100' rx='20' fill='url(%23g)'/><text y='68' x='50' text-anchor='middle' font-size='55' fill='white' font-family='Arial'>⚡</text></svg>">
     <script src="/socket.io/socket.io.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,183 +13,383 @@
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
             --bg: #FAFAFA; --fg: #0F172A; --muted: #F1F5F9; --muted-fg: #64748B;
-            --accent: #0052FF; --accent2: #4D7CFF; --border: #E2E8F0; --card: #FFFFFF;
-            --success-bg: #DCFCE7; --success-fg: #16A34A;
-            --warn-bg: #FEF9C3; --warn-fg: #CA8A04;
-            --info-bg: #E0F2FE; --info-fg: #0284C7;
-            --danger-bg: #FEE2E2; --danger-fg: #DC2626;
-            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
-            --shadow-md: 0 4px 12px rgba(0,0,0,0.07);
-            --shadow-accent: 0 4px 14px rgba(0,82,255,0.2);
-            --radius: 12px;
+            --accent: #0052FF; --accent2: #4D7CFF; --accent-glow: rgba(0,82,255,0.12);
+            --border: #E2E8F0; --card: #FFFFFF;
+            --success: #16A34A; --success-bg: #DCFCE7;
+            --warn: #CA8A04; --warn-bg: #FEF9C3;
+            --info: #0284C7; --info-bg: #E0F2FE;
+            --danger: #DC2626; --danger-bg: #FEE2E2;
+            --radius: 14px;
         }
-        html { font-size: 16px; }
-        body { font-family:'Inter',system-ui,sans-serif; background:var(--bg); color:var(--fg); min-height:100vh; }
+        html { font-size: 16px; scroll-behavior: smooth; }
+        body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+        /* SCROLLBAR */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--muted-fg); }
 
         /* SIDEBAR */
-        .sidebar { position:fixed; top:0; left:0; width:220px; height:100vh; background:var(--fg); display:flex; flex-direction:column; padding:28px 20px; z-index:100; gap:4px; }
-        .sidebar-logo { display:flex; align-items:center; gap:10px; margin-bottom:28px; }
-        .sidebar-logo-icon { width:36px; height:36px; background:linear-gradient(135deg,var(--accent),var(--accent2)); border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:18px; }
-        .sidebar-logo-text { font-family:'Calistoga',Georgia,serif; font-size:20px; color:#FFF; letter-spacing:-0.02em; }
-        .sidebar-label { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.15em; text-transform:uppercase; color:rgba(255,255,255,0.3); margin:14px 0 4px 8px; }
-        .sidebar-link { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; color:rgba(255,255,255,0.6); font-size:14px; font-weight:500; cursor:pointer; transition:all 0.18s; text-decoration:none; }
-        .sidebar-link:hover { background:rgba(255,255,255,0.08); color:#FFF; }
-        .sidebar-link.active { background:linear-gradient(135deg,rgba(0,82,255,0.3),rgba(77,124,255,0.15)); color:#FFF; }
-        .sidebar-live { margin-top:auto; display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:8px; background:rgba(16,185,129,0.12); font-size:12px; font-weight:500; color:#34D399; }
-        .live-dot { width:7px; height:7px; background:#10B981; border-radius:50%; animation:pulse 2s infinite; flex-shrink:0; }
-        @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.6;transform:scale(1.3)} }
+        .sidebar {
+            position: fixed; top: 0; left: 0; width: 240px; height: 100vh;
+            background: var(--fg); display: flex; flex-direction: column;
+            padding: 0; z-index: 100; overflow-y: auto;
+        }
+        .sidebar-head {
+            padding: 28px 24px 20px; border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .sidebar-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+        .sidebar-logo-icon {
+            width: 40px; height: 40px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            border-radius: 12px; display: flex; align-items: center; justify-content: center;
+            font-size: 20px; box-shadow: 0 4px 14px rgba(0,82,255,0.35);
+        }
+        .sidebar-logo-text { font-family: 'Calistoga', Georgia, serif; font-size: 22px; color: #FFF; }
+        .sidebar-version {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            color: rgba(255,255,255,0.25); letter-spacing: 0.1em; margin-left: 52px;
+        }
+
+        .sidebar-nav { padding: 16px 14px; flex: 1; }
+        .sidebar-label {
+            font-family: 'JetBrains Mono', monospace; font-size: 9px;
+            letter-spacing: 0.18em; text-transform: uppercase;
+            color: rgba(255,255,255,0.2); margin: 20px 0 8px 10px;
+        }
+        .sidebar-label:first-child { margin-top: 0; }
+        .sidebar-link {
+            display: flex; align-items: center; gap: 11px;
+            padding: 10px 14px; border-radius: 10px;
+            color: rgba(255,255,255,0.5); font-size: 13.5px; font-weight: 500;
+            cursor: pointer; transition: all 0.2s; text-decoration: none;
+            margin-bottom: 2px;
+        }
+        .sidebar-link:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.85); }
+        .sidebar-link.active {
+            background: linear-gradient(135deg, rgba(0,82,255,0.28), rgba(77,124,255,0.12));
+            color: #FFF; font-weight: 600;
+            box-shadow: 0 2px 8px rgba(0,82,255,0.15);
+        }
+        .sidebar-link .icon { font-size: 17px; width: 22px; text-align: center; }
+        .sidebar-link .count {
+            margin-left: auto; background: rgba(255,255,255,0.08);
+            padding: 1px 8px; border-radius: 6px; font-size: 11px;
+            font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.4);
+        }
+
+        .sidebar-ttl {
+            padding: 16px 24px; border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .ttl-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px;
+            font-size: 10.5px; font-family: 'JetBrains Mono', monospace;
+            color: rgba(255,255,255,0.3); line-height: 1.9;
+        }
+        .ttl-grid span { color: rgba(255,255,255,0.55); font-weight: 500; }
+
+        .sidebar-footer {
+            padding: 16px 24px; border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .sidebar-live {
+            display: flex; align-items: center; gap: 9px;
+            padding: 10px 14px; border-radius: 10px;
+            background: rgba(16,185,129,0.1); font-size: 12px;
+            font-weight: 600; color: #34D399;
+        }
+        .live-dot {
+            width: 8px; height: 8px; background: #10B981; border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite; flex-shrink: 0;
+            box-shadow: 0 0 8px rgba(16,185,129,0.5);
+        }
+        @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.4)} }
 
         /* MAIN */
-        .main { margin-left:220px; padding:36px 40px; min-height:100vh; }
+        .main { margin-left: 240px; padding: 36px 44px 60px; min-height: 100vh; }
 
         /* HEADER */
-        .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:32px; }
-        .header-title { font-family:'Calistoga',Georgia,serif; font-size:28px; letter-spacing:-0.02em; }
-        .header-subtitle { font-size:13px; color:var(--muted-fg); margin-top:2px; }
-        .header-refresh { display:flex; align-items:center; gap:6px; padding:9px 16px; background:var(--card); border:1px solid var(--border); border-radius:10px; font-size:13px; font-weight:500; color:var(--fg); cursor:pointer; transition:all 0.2s; box-shadow:var(--shadow-sm); font-family:'Inter',sans-serif; }
-        .header-refresh:hover { border-color:var(--accent); color:var(--accent); box-shadow:var(--shadow-accent); }
+        .header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 36px; }
+        .header-left {}
+        .header-greeting { font-size: 13px; color: var(--muted-fg); margin-bottom: 4px; font-weight: 500; }
+        .header-title {
+            font-family: 'Calistoga', Georgia, serif; font-size: 30px;
+            letter-spacing: -0.02em; line-height: 1.15;
+        }
+        .header-title em {
+            font-style: normal;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .header-actions { display: flex; gap: 10px; align-items: center; }
+        .header-time {
+            font-family: 'JetBrains Mono', monospace; font-size: 11px;
+            color: var(--muted-fg); padding: 8px 14px;
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+        .btn-refresh {
+            display: flex; align-items: center; gap: 7px;
+            padding: 9px 18px; background: linear-gradient(135deg, var(--accent), var(--accent2));
+            border: none; border-radius: 10px; font-size: 13px; font-weight: 600;
+            color: #FFF; cursor: pointer; transition: all 0.25s;
+            box-shadow: 0 4px 14px rgba(0,82,255,0.25); font-family: 'Inter', sans-serif;
+        }
+        .btn-refresh:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,82,255,0.35); }
+        .btn-refresh:active { transform: scale(0.97); }
 
         /* STATS */
-        .stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:32px; }
-        .stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:20px 22px; box-shadow:var(--shadow-sm); transition:box-shadow 0.2s,transform 0.2s; }
-        .stat-card:hover { box-shadow:var(--shadow-md); transform:translateY(-2px); }
-        .stat-card:first-child { border-top:3px solid var(--accent); }
-        .stat-label { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted-fg); margin-bottom:8px; }
-        .stat-value { font-size:30px; font-weight:700; letter-spacing:-0.02em; line-height:1; }
-        .stat-value.accent { color:var(--accent); }
-        .stat-sub { font-size:12px; color:var(--muted-fg); margin-top:4px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 32px; }
+        .stat-card {
+            background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 22px 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+            transition: all 0.25s; position: relative; overflow: hidden;
+        }
+        .stat-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+            background: var(--border); border-radius: var(--radius) var(--radius) 0 0;
+        }
+        .stat-card:nth-child(1)::before { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+        .stat-card:nth-child(2)::before { background: var(--success); }
+        .stat-card:nth-child(3)::before { background: var(--info); }
+        .stat-card:nth-child(4)::before { background: var(--warn); }
+        .stat-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
+        .stat-icon {
+            width: 40px; height: 40px; border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px; margin-bottom: 14px;
+        }
+        .stat-card:nth-child(1) .stat-icon { background: var(--accent-glow); }
+        .stat-card:nth-child(2) .stat-icon { background: rgba(22,163,74,0.08); }
+        .stat-card:nth-child(3) .stat-icon { background: rgba(2,132,199,0.08); }
+        .stat-card:nth-child(4) .stat-icon { background: rgba(202,138,4,0.08); }
+        .stat-label {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-fg); margin-bottom: 6px;
+        }
+        .stat-value { font-size: 34px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
+        .stat-card:nth-child(1) .stat-value { color: var(--accent); }
+        .stat-card:nth-child(2) .stat-value { color: var(--success); }
+        .stat-card:nth-child(3) .stat-value { color: var(--info); }
+        .stat-card:nth-child(4) .stat-value { color: var(--warn); }
+        .stat-sub { font-size: 11.5px; color: var(--muted-fg); margin-top: 4px; }
 
-        /* SECTION HDR */
-        .section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
-        .section-badge { display:inline-flex; align-items:center; gap:8px; padding:5px 14px; border-radius:999px; border:1px solid rgba(0,82,255,0.25); background:rgba(0,82,255,0.05); }
-        .section-badge-dot { width:6px; height:6px; background:var(--accent); border-radius:50%; }
-        .section-badge-text { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.15em; text-transform:uppercase; color:var(--accent); }
-        .section-count { font-size:12px; color:var(--muted-fg); font-weight:500; }
+        /* SECTION */
+        .section { margin-bottom: 32px; }
+        .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+        .section-badge {
+            display: inline-flex; align-items: center; gap: 9px;
+            padding: 6px 16px; border-radius: 999px;
+            border: 1px solid rgba(0,82,255,0.2); background: rgba(0,82,255,0.04);
+        }
+        .section-badge-dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: pulse 2s infinite; }
+        .section-badge-text {
+            font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+            letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); font-weight: 500;
+        }
+        .section-count { font-size: 12px; color: var(--muted-fg); font-weight: 500; }
 
         /* CARD */
-        .card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-sm); overflow:hidden; margin-bottom:28px; }
-        .card-inner { overflow-x:auto; }
+        .card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: var(--radius); box-shadow: 0 1px 4px rgba(0,0,0,0.04); overflow: hidden;
+        }
+        .card-inner { overflow-x: auto; }
 
         /* TABLE */
-        table { width:100%; border-collapse:collapse; font-size:13.5px; }
-        thead { background:var(--muted); border-bottom:1px solid var(--border); }
-        th { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted-fg); font-weight:500; padding:12px 16px; text-align:left; white-space:nowrap; }
-        td { padding:13px 16px; border-bottom:1px solid var(--border); vertical-align:middle; }
-        tbody tr:last-child td { border-bottom:none; }
-        tbody tr { transition:background 0.15s; }
-        tbody tr:hover { background:rgba(0,82,255,0.02); }
-        .empty-row td { text-align:center; color:var(--muted-fg); padding:40px; font-size:13px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+        thead { background: var(--muted); }
+        th {
+            font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-fg);
+            font-weight: 500; padding: 13px 18px; text-align: left; white-space: nowrap;
+        }
+        td { padding: 14px 18px; border-top: 1px solid var(--border); vertical-align: middle; }
+        tbody tr { transition: background 0.15s; }
+        tbody tr:hover { background: rgba(0,82,255,0.015); }
+        .empty-row td { text-align: center; color: var(--muted-fg); padding: 48px 20px; font-size: 13px; }
 
         /* BADGES */
-        .badge { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:999px; font-size:11px; font-weight:600; white-space:nowrap; }
-        .badge-pending { background:var(--warn-bg); color:var(--warn-fg); }
-        .badge-verified { background:var(--success-bg); color:var(--success-fg); }
-        .badge-resolved { background:var(--info-bg); color:var(--info-fg); }
-        .badge-critical { background:var(--danger-bg); color:var(--danger-fg); }
-        .badge-high { background:var(--warn-bg); color:var(--warn-fg); }
-        .badge-medium { background:var(--info-bg); color:var(--info-fg); }
-        .badge-low { background:var(--success-bg); color:var(--success-fg); }
-        .badge-citizen { background:var(--muted); color:var(--muted-fg); }
-        .badge-emergency_driver { background:rgba(0,82,255,0.1); color:var(--accent); }
+        .badge {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 4px 11px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap;
+        }
+        .badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+        .badge-pending { background: var(--warn-bg); color: var(--warn); }
+        .badge-verified { background: var(--success-bg); color: var(--success); }
+        .badge-resolved { background: var(--info-bg); color: var(--info); }
+        .badge-critical { background: var(--danger-bg); color: var(--danger); }
+        .badge-high { background: var(--warn-bg); color: var(--warn); }
+        .badge-medium { background: var(--info-bg); color: var(--info); }
+        .badge-low { background: var(--success-bg); color: var(--success); }
+        .badge-citizen { background: var(--muted); color: var(--muted-fg); }
+        .badge-emergency_driver { background: var(--accent-glow); color: var(--accent); }
 
         /* TYPE CHIP */
-        .type-chip { display:inline-flex; align-items:center; gap:7px; font-weight:600; text-transform:capitalize; }
-        .type-chip-icon { width:26px; height:26px; border-radius:6px; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex; align-items:center; justify-content:center; font-size:13px; flex-shrink:0; }
+        .type-chip { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; text-transform: capitalize; }
+        .type-chip-icon {
+            width: 30px; height: 30px; border-radius: 8px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,82,255,0.2);
+        }
 
         /* PHOTO */
-        img.report-photo { width:46px; height:46px; object-fit:cover; border-radius:8px; border:1px solid var(--border); cursor:pointer; transition:transform 0.2s,box-shadow 0.2s; }
-        img.report-photo:hover { transform:scale(1.1); box-shadow:var(--shadow-md); }
-        .no-photo { font-size:11px; color:var(--muted-fg); font-style:italic; }
+        img.report-photo {
+            width: 50px; height: 50px; object-fit: cover; border-radius: 10px;
+            border: 2px solid var(--border); cursor: pointer;
+            transition: all 0.25s;
+        }
+        img.report-photo:hover { transform: scale(1.12); box-shadow: 0 8px 20px rgba(0,0,0,0.12); border-color: var(--accent); }
+        .no-photo { font-size: 11px; color: var(--border); }
 
         /* SELECT */
-        .status-select { padding:6px 10px; font-size:12px; font-family:'Inter',sans-serif; font-weight:500; border-radius:8px; border:1px solid var(--border); background:var(--muted); color:var(--fg); cursor:pointer; outline:none; transition:border-color 0.2s,box-shadow 0.2s; }
-        .status-select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(0,82,255,0.12); }
+        .status-select {
+            padding: 7px 12px; font-size: 12px; font-family: 'Inter', sans-serif;
+            font-weight: 500; border-radius: 8px; border: 1px solid var(--border);
+            background: var(--card); color: var(--fg); cursor: pointer; outline: none;
+            transition: all 0.2s; appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2364748B' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: right 10px center;
+            padding-right: 28px;
+        }
+        .status-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,82,255,0.1); }
+        .status-select:hover { border-color: var(--accent); }
 
         /* AVATAR */
-        .avatar { width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#FFF; text-transform:uppercase; margin-right:8px; flex-shrink:0; vertical-align:middle; }
-        .user-cell { display:flex; align-items:center; }
-        .points-cell { font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums; }
+        .avatar {
+            width: 34px; height: 34px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 13px; font-weight: 700; color: #FFF; text-transform: uppercase;
+            margin-right: 10px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,82,255,0.2);
+        }
+        .user-cell { display: flex; align-items: center; }
+        .user-name { font-weight: 600; }
+        .points-cell { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 14px; }
 
         /* TWO COL */
-        .two-col { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
-
-        /* LAST UPDATED */
-        #last-updated { font-size:11px; color:var(--muted-fg); text-align:right; margin-bottom:16px; }
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 
         /* MODAL */
-        .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); backdrop-filter:blur(4px); z-index:1000; align-items:center; justify-content:center; }
-        .modal-overlay.open { display:flex; }
-        .modal { background:var(--card); border-radius:16px; padding:24px; max-width:500px; width:90%; box-shadow:0 25px 50px rgba(0,0,0,0.2); }
-        .modal img { width:100%; border-radius:10px; margin-top:14px; }
-        .modal-close { float:right; background:var(--muted); border:none; border-radius:8px; padding:6px 12px; cursor:pointer; font-size:13px; font-family:'Inter',sans-serif; font-weight:500; color:var(--fg); }
-        .modal-close:hover { background:var(--border); }
+        .modal-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(15,23,42,0.6); backdrop-filter: blur(8px);
+            z-index: 1000; align-items: center; justify-content: center;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal {
+            background: var(--card); border-radius: 20px; padding: 28px;
+            max-width: 520px; width: 92%; box-shadow: 0 25px 60px rgba(0,0,0,0.2);
+            animation: modalIn 0.25s ease-out;
+        }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.95) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+        .modal img { width: 100%; border-radius: 12px; margin-top: 14px; }
+        .modal-close {
+            float: right; background: var(--muted); border: none; border-radius: 8px;
+            padding: 7px 14px; cursor: pointer; font-size: 13px;
+            font-family: 'Inter', sans-serif; font-weight: 500; color: var(--fg); transition: background 0.15s;
+        }
+        .modal-close:hover { background: var(--border); }
+
+        /* FADE IN ANIMATION */
+        .fade-in { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+        .desc-cell { max-width: 200px; color: var(--muted-fg); font-size: 13px; line-height: 1.4; }
+        .loc-cell { max-width: 160px; font-size: 12px; color: var(--muted-fg); font-family: 'JetBrains Mono', monospace; }
     </style>
 </head>
 <body>
 
 <aside class="sidebar">
-    <div class="sidebar-logo">
-        <div class="sidebar-logo-icon">🛣️</div>
-        <span class="sidebar-logo-text">ClearPath</span>
-    </div>
-    <span class="sidebar-label">Navigation</span>
-    <div class="sidebar-link active" onclick="showSection('all')">📊 &nbsp;Dashboard</div>
-    <div class="sidebar-link" onclick="showSection('reports')">🚨 &nbsp;Reports</div>
-    <div class="sidebar-link" onclick="showSection('trips')">🚑 &nbsp;Signal-Aid</div>
-    <div class="sidebar-link" onclick="showSection('users')">👥 &nbsp;Users</div>
-
-    <span class="sidebar-label">Auto-Expiry TTL</span>
-    <div style="padding:10px 12px;font-size:11px;color:rgba(255,255,255,0.45);line-height:1.8;font-family:'JetBrains Mono',monospace;">
-        💥 Accident &nbsp;&nbsp;2 h<br>
-        🚦 Congestion &nbsp;3 h<br>
-        🚧 Blocked &nbsp;&nbsp;&nbsp;4 h<br>
-        🌊 Flooding &nbsp;&nbsp;6 h<br>
-        🕳️ Pothole &nbsp;&nbsp;48 h
+    <div class="sidebar-head">
+        <div class="sidebar-logo">
+            <div class="sidebar-logo-icon">⚡</div>
+            <span class="sidebar-logo-text">ClearPath</span>
+        </div>
+        <div class="sidebar-version">COMMAND SERVER v1.0</div>
     </div>
 
-    <div class="sidebar-live">
-        <div class="live-dot"></div> ClearPath Online
+    <div class="sidebar-nav">
+        <div class="sidebar-label">Overview</div>
+        <div class="sidebar-link active" onclick="showSection('all',this)">
+            <span class="icon">📊</span> Dashboard
+        </div>
+
+        <div class="sidebar-label">Data</div>
+        <div class="sidebar-link" onclick="showSection('reports',this)">
+            <span class="icon">🚨</span> Reports <span class="count" id="nav-reports">0</span>
+        </div>
+        <div class="sidebar-link" onclick="showSection('trips',this)">
+            <span class="icon">🚑</span> Signal-Aid <span class="count" id="nav-trips">0</span>
+        </div>
+        <div class="sidebar-link" onclick="showSection('users',this)">
+            <span class="icon">👥</span> Users <span class="count" id="nav-users">0</span>
+        </div>
+    </div>
+
+    <div class="sidebar-ttl">
+        <div class="sidebar-label" style="margin:0 0 10px 0">Auto-Expiry TTL</div>
+        <div class="ttl-grid">
+            <div>💥 Accident</div><div><span>2 hrs</span></div>
+            <div>🚦 Congestion</div><div><span>3 hrs</span></div>
+            <div>🚧 Blocked</div><div><span>4 hrs</span></div>
+            <div>🌊 Flooding</div><div><span>6 hrs</span></div>
+            <div>🕳️ Pothole</div><div><span>48 hrs</span></div>
+        </div>
+    </div>
+
+    <div class="sidebar-footer">
+        <div class="sidebar-live">
+            <div class="live-dot"></div> ClearPath Online
+        </div>
     </div>
 </aside>
 
 <main class="main">
-    <div class="header">
-        <div>
-            <h1 class="header-title">Command Dashboard</h1>
-            <p class="header-subtitle">Real-time data · Roadly & Signal-Aid backend</p>
+    <div class="header fade-in">
+        <div class="header-left">
+            <div class="header-greeting">Welcome back, Admin</div>
+            <h1 class="header-title">Command <em>Dashboard</em></h1>
         </div>
-        <button class="header-refresh" onclick="fetchData()">↻ &nbsp;Refresh</button>
+        <div class="header-actions">
+            <div class="header-time" id="live-clock"></div>
+            <button class="btn-refresh" onclick="fetchData()">↻ &nbsp;Refresh</button>
+        </div>
     </div>
 
-    <div class="stats-grid">
+    <div class="stats-grid fade-in">
         <div class="stat-card">
+            <div class="stat-icon">🚨</div>
             <div class="stat-label">Total Reports</div>
-            <div class="stat-value accent" id="stat-reports">—</div>
-            <div class="stat-sub">Roadly incidents</div>
+            <div class="stat-value" id="stat-reports">—</div>
+            <div class="stat-sub">Active incidents</div>
         </div>
         <div class="stat-card">
+            <div class="stat-icon">✅</div>
             <div class="stat-label">Verified</div>
             <div class="stat-value" id="stat-verified">—</div>
-            <div class="stat-sub">Confirmed by admin</div>
+            <div class="stat-sub">Admin confirmed</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Signal-Aid Trips</div>
+            <div class="stat-icon">🚑</div>
+            <div class="stat-label">Dispatches</div>
             <div class="stat-value" id="stat-trips">—</div>
-            <div class="stat-sub">Emergency dispatches</div>
+            <div class="stat-sub">Signal-Aid trips</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Registered Users</div>
+            <div class="stat-icon">👥</div>
+            <div class="stat-label">Users</div>
             <div class="stat-value" id="stat-users">—</div>
-            <div class="stat-sub">Citizens & drivers</div>
+            <div class="stat-sub">Registered accounts</div>
         </div>
     </div>
 
-    <div id="last-updated"></div>
-
     <!-- Reports -->
-    <div id="reports-section">
+    <div class="section fade-in" id="reports-section">
         <div class="section-header">
-            <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Roadly Reports</span></div>
+            <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Road Reports</span></div>
             <span class="section-count" id="reports-count"></span>
         </div>
         <div class="card"><div class="card-inner">
@@ -201,28 +402,28 @@
 
     <div class="two-col">
         <!-- Trips -->
-        <div id="trips-section">
+        <div class="section fade-in" id="trips-section">
             <div class="section-header">
                 <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Signal-Aid Trips</span></div>
                 <span class="section-count" id="trips-count"></span>
             </div>
             <div class="card"><div class="card-inner">
                 <table>
-                    <thead><tr><th>Driver</th><th>Criticality</th><th>Time</th><th>Dist.</th></tr></thead>
+                    <thead><tr><th>Driver</th><th>Criticality</th><th>Time</th><th>Distance</th></tr></thead>
                     <tbody id="trips-tbody"><tr class="empty-row"><td colspan="4">No trips yet</td></tr></tbody>
                 </table>
             </div></div>
         </div>
 
         <!-- Users -->
-        <div id="users-section">
+        <div class="section fade-in" id="users-section">
             <div class="section-header">
-                <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Users</span></div>
+                <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Registered Users</span></div>
                 <span class="section-count" id="users-count"></span>
             </div>
             <div class="card"><div class="card-inner">
                 <table>
-                    <thead><tr><th>Name</th><th>Phone</th><th>Role</th><th>Points</th></tr></thead>
+                    <thead><tr><th>Name</th><th>Phone / ID</th><th>Role</th><th>Points</th></tr></thead>
                     <tbody id="users-tbody"><tr class="empty-row"><td colspan="4">No users yet</td></tr></tbody>
                 </table>
             </div></div>
@@ -240,41 +441,43 @@
 <script>
     const socket = io();
     const TYPE_ICONS = { accident:'💥', congestion:'🚦', blocked:'🚧', flooding:'🌊', pothole:'🕳️' };
-
     socket.on('admin_refresh', fetchData);
 
-    // Section filter: show only the clicked section or all
-    function showSection(section) {
-        const sections = { reports:'reports-section', trips:'trips-section', users:'users-section' };
-        const statsGrid = document.querySelector('.stats-grid');
-        const twoCol = document.querySelector('.two-col');
+    // Live clock
+    function updateClock() {
+        const now = new Date();
+        document.getElementById('live-clock').textContent =
+            now.toLocaleDateString('en-IN', { day:'2-digit', month:'short' }) + '  •  ' +
+            now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
 
-        // Update active link
-        document.querySelectorAll('.sidebar-link').forEach(el => el.classList.remove('active'));
-        event.currentTarget.classList.add('active');
+    // Nav filter
+    function showSection(section, el) {
+        const stats = document.querySelector('.stats-grid');
+        const repSec = document.getElementById('reports-section');
+        const twoCol = document.querySelector('.two-col');
+        const tripSec = document.getElementById('trips-section');
+        const userSec = document.getElementById('users-section');
+
+        document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+        el.classList.add('active');
 
         if (section === 'all') {
-            statsGrid.style.display = 'grid';
-            Object.values(sections).forEach(id => {
-                const el = document.getElementById(id);
-                if (el) { el.style.display = 'block'; el.closest('.two-col') && (twoCol.style.display = 'grid'); }
-            });
+            stats.style.display = 'grid';
+            repSec.style.display = 'block';
             twoCol.style.display = 'grid';
-            document.getElementById('reports-section').style.display = 'block';
-            return;
-        }
-
-        statsGrid.style.display = 'none';
-        // Hide all
-        document.getElementById('reports-section').style.display = 'none';
-        twoCol.style.display = 'none';
-
-        if (section === 'reports') {
-            document.getElementById('reports-section').style.display = 'block';
-        } else if (section === 'trips' || section === 'users') {
-            twoCol.style.display = 'grid';
-            document.getElementById('trips-section').style.display = section === 'trips' ? 'block' : 'none';
-            document.getElementById('users-section').style.display = section === 'users' ? 'block' : 'none';
+            tripSec.style.display = 'block';
+            userSec.style.display = 'block';
+        } else {
+            stats.style.display = 'none';
+            repSec.style.display = section === 'reports' ? 'block' : 'none';
+            if (section === 'trips' || section === 'users') {
+                twoCol.style.display = 'grid';
+                tripSec.style.display = section === 'trips' ? 'block' : 'none';
+                userSec.style.display = section === 'users' ? 'block' : 'none';
+            } else { twoCol.style.display = 'none'; }
         }
     }
 
@@ -288,6 +491,7 @@
         const [rRes, tRes, uRes] = await Promise.all([fetch('/api/reports'), fetch('/api/trips'), fetch('/api/users')]);
         const [reports, trips, users] = await Promise.all([rRes.json(), tRes.json(), uRes.json()]);
         renderReports(reports); renderTrips(trips); renderUsers(users);
+
         document.getElementById('stat-reports').textContent = reports.length;
         document.getElementById('stat-verified').textContent = reports.filter(r=>r.status==='verified').length;
         document.getElementById('stat-trips').textContent = trips.length;
@@ -295,47 +499,49 @@
         document.getElementById('reports-count').textContent = reports.length + ' total';
         document.getElementById('trips-count').textContent = trips.length + ' total';
         document.getElementById('users-count').textContent = users.length + ' registered';
-        document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+        document.getElementById('nav-reports').textContent = reports.length;
+        document.getElementById('nav-trips').textContent = trips.length;
+        document.getElementById('nav-users').textContent = users.length;
     }
 
     function renderReports(reports) {
         const tbody = document.getElementById('reports-tbody');
-        if (!reports.length) { tbody.innerHTML='<tr class="empty-row"><td colspan="6">No reports submitted yet</td></tr>'; return; }
+        if (!reports.length) { tbody.innerHTML='<tr class="empty-row"><td colspan="6">No reports submitted yet. Open the Roadly app and report a road issue!</td></tr>'; return; }
         tbody.innerHTML = '';
         reports.forEach(r => {
             const icon = TYPE_ICONS[r.type] || '⚠️';
-            const photo = r.photo_url ? `<img src="${r.photo_url}" class="report-photo" onclick="openModal('${r.photo_url}')">` : `<span class="no-photo">None</span>`;
+            const photo = r.photo_url
+                ? '<img src="'+r.photo_url+'" class="report-photo" onclick="openModal(\''+r.photo_url+'\')" title="Click to view">'
+                : '<span class="no-photo">—</span>';
             const loc = r.address || (r.latitude ? r.latitude.toFixed(4)+', '+r.longitude.toFixed(4) : '—');
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><div class="type-chip"><div class="type-chip-icon">${icon}</div>${r.type}</div></td>
-                <td style="max-width:180px;color:var(--muted-fg)">${r.description||'—'}</td>
-                <td style="max-width:160px;font-size:12px;color:var(--muted-fg)">${loc}</td>
-                <td>${photo}</td>
-                <td><span class="badge badge-${r.status}">${r.status}</span></td>
-                <td>
-                    <select class="status-select" onchange="updateStatus('${r.id}',this.value)">
-                        <option value="" disabled ${!r.status?'selected':''}>Update…</option>
-                        <option value="pending" ${r.status==='pending'?'selected':''}>Pending</option>
-                        <option value="verified" ${r.status==='verified'?'selected':''}>Verified</option>
-                        <option value="resolved" ${r.status==='resolved'?'selected':''}>Resolved</option>
-                    </select>
-                </td>`;
+            tr.innerHTML =
+                '<td><div class="type-chip"><div class="type-chip-icon">'+icon+'</div>'+r.type+'</div></td>'+
+                '<td class="desc-cell">'+( r.description||'—')+'</td>'+
+                '<td class="loc-cell">'+loc+'</td>'+
+                '<td>'+photo+'</td>'+
+                '<td><span class="badge badge-'+r.status+'"><span class="badge-dot"></span>'+r.status+'</span></td>'+
+                '<td><select class="status-select" onchange="updateStatus(\''+r.id+'\',this.value)">'+
+                    '<option value="" disabled '+(r.status?'':'selected')+'>Update…</option>'+
+                    '<option value="pending" '+(r.status==='pending'?'selected':'')+'>Pending</option>'+
+                    '<option value="verified" '+(r.status==='verified'?'selected':'')+'>Verified</option>'+
+                    '<option value="resolved" '+(r.status==='resolved'?'selected':'')+'>Resolved</option>'+
+                '</select></td>';
             tbody.appendChild(tr);
         });
     }
 
     function renderTrips(trips) {
         const tbody = document.getElementById('trips-tbody');
-        if (!trips.length) { tbody.innerHTML='<tr class="empty-row"><td colspan="4">No emergency trips yet</td></tr>'; return; }
+        if (!trips.length) { tbody.innerHTML='<tr class="empty-row"><td colspan="4">No emergency dispatches yet</td></tr>'; return; }
         tbody.innerHTML = '';
         trips.forEach(t => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td style="font-weight:600">${t.driver_id||'—'}<br><small style="color:var(--muted-fg);font-weight:400">${t.vehicle_no||''}</small></td>
-                <td><span class="badge badge-${t.criticality}">${t.criticality||'—'}</span></td>
-                <td>${t.travel_time?t.travel_time.toFixed(1)+'s':'—'}</td>
-                <td>${t.distance?t.distance.toFixed(1)+' km':'—'}</td>`;
+            tr.innerHTML =
+                '<td><strong>'+(t.driver_id||'—')+'</strong><br><span style="color:var(--muted-fg);font-size:11px">'+(t.vehicle_no||'')+'</span></td>'+
+                '<td><span class="badge badge-'+(t.criticality||'medium')+'">'+(t.criticality||'—')+'</span></td>'+
+                '<td style="font-variant-numeric:tabular-nums">'+(t.travel_time?t.travel_time.toFixed(1)+'s':'—')+'</td>'+
+                '<td>'+(t.distance?t.distance.toFixed(1)+' km':'—')+'</td>';
             tbody.appendChild(tr);
         });
     }
@@ -347,11 +553,11 @@
         users.forEach(u => {
             const initials = (u.name||u.phone||'?').substring(0,2).toUpperCase();
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><div class="user-cell"><div class="avatar">${initials}</div><strong>${u.name||'—'}</strong></div></td>
-                <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${u.phone||u.driver_id||'—'}</td>
-                <td><span class="badge badge-${u.role}">${u.role}</span></td>
-                <td class="points-cell">${u.points} pts</td>`;
+            tr.innerHTML =
+                '<td><div class="user-cell"><div class="avatar">'+initials+'</div><span class="user-name">'+(u.name||'—')+'</span></div></td>'+
+                '<td style="font-family:\'JetBrains Mono\',monospace;font-size:12px;color:var(--muted-fg)">'+(u.phone||u.driver_id||'—')+'</td>'+
+                '<td><span class="badge badge-'+u.role+'">'+u.role+'</span></td>'+
+                '<td class="points-cell">'+u.points+' pts</td>';
             tbody.appendChild(tr);
         });
     }
