@@ -15,6 +15,13 @@ ClearPath is the central cloud intelligence backend for the **Roadly** and **Sig
 - **SQLite3 (Built from source)**: Lightweight, zero-config relational database.
 - **HTML5/CSS3**: Pure, framework-less, high-performance dashboard UI.
 
+### 🌐 Cloud Infrastructure (Free Tier Stack)
+Roadly's entire backend ecosystem is hosted using a combination of 4 free services to keep it online permanently:
+1. **GitHub** - Hosts the source code and the downloadable APK releases.
+2. **Render** - Hosts the Node.js/Socket.IO backend server (Web Service).
+3. **Neon.tech** - Provides the permanent, serverless PostgreSQL database.
+4. **cron-job.org** - Pings the server's /health endpoint every 10 minutes to prevent Render's free tier from sleeping.
+
 ### 🚀 Deployment
 This server is optimized for **Render (Free Tier)**. 
 - Uses .node-version (v18) to ensure maximum compatibility with pre-built SQLite C++ binaries on Render's Linux environment.
