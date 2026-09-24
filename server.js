@@ -5,7 +5,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const { randomUUID: uuidv4 } = require('crypto');
-const { dbRun, dbGet, dbAll } = require('./database');
+const { dbRun, dbGet, dbAll, initPromise } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
@@ -185,8 +185,7 @@ async function runExpiryEngine() {
   if (count > 0) notifyAdmin();
 }
 
-runExpiryEngine();
-setInterval(runExpiryEngine, 10 * 60 * 1000); });
+initPromise.then(() => { runExpiryEngine(); setInterval(runExpiryEngine, 10 * 60 * 1000); });
 
 // â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
 app.get('/health', (req, res) => {
