@@ -75,7 +75,7 @@ async function initDb() {
     client.release();
   }
 }
-initDb();
+const initPromise = initDb();
 
 function convertSql(sql) {
   let i = 1;
@@ -96,4 +96,4 @@ const dbAll = async (sql, params = []) => {
   return res.rows;
 };
 
-module.exports = { db: pool, dbRun, dbGet, dbAll };
+module.exports = { db: pool, dbRun, dbGet, dbAll, initPromise };

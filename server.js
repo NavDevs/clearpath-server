@@ -186,7 +186,7 @@ async function runExpiryEngine() {
 }
 
 runExpiryEngine();
-setInterval(runExpiryEngine, 10 * 60 * 1000);
+setInterval(runExpiryEngine, 10 * 60 * 1000); });
 
 // â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
 app.get('/health', (req, res) => {
