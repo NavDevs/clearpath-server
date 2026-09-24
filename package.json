@@ -4,7 +4,7 @@
   "description": "ClearPath Command Server for Roadly & Signal-Aid",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",`n    "postinstall": "npm rebuild sqlite3 --build-from-source"
   },
   "engines": {
     "node": "20.x"
