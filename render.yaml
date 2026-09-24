@@ -1,10 +1,12 @@
-services:
+﻿services:
   - type: web
     name: clearpath-server
     runtime: node
-    buildCommand: npm install
+    buildCommand: npm install --build-from-source=sqlite3
     startCommand: node server.js
     plan: free
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 18.19.1
