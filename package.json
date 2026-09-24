@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "clearpath-server",
   "version": "1.0.0",
   "description": "ClearPath Command Server for Roadly & Signal-Aid",
@@ -7,7 +7,7 @@
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20.x"
   },
   "keywords": [],
   "author": "Naveen",
