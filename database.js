@@ -12,7 +12,7 @@ pool.on('error', (err) => {
 async function initDb() {
   const client = await pool.connect();
   try {
-    await client.query(CREATE TABLE IF NOT EXISTS users (
+    await client.query(`CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       role TEXT CHECK(role IN ('citizen', 'emergency_driver', 'admin')),
       phone TEXT UNIQUE,
@@ -22,13 +22,13 @@ async function initDb() {
       vehicle_no TEXT,
       points INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ));
+    )`);
     
     try {
       await client.query("ALTER TABLE users ADD COLUMN password TEXT");
     } catch(e) {}
 
-    await client.query(CREATE TABLE IF NOT EXISTS road_reports (
+    await client.query(`CREATE TABLE IF NOT EXISTS road_reports (
       id TEXT PRIMARY KEY,
       user_id TEXT,
       type TEXT,
@@ -41,9 +41,9 @@ async function initDb() {
       points INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(user_id) REFERENCES users(id)
-    ));
+    )`);
 
-    await client.query(CREATE TABLE IF NOT EXISTS emergency_trips (
+    await client.query(`CREATE TABLE IF NOT EXISTS emergency_trips (
       id TEXT PRIMARY KEY,
       driver_id TEXT,
       vehicle_no TEXT,
@@ -56,9 +56,9 @@ async function initDb() {
       started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(driver_id) REFERENCES users(id),
       FOREIGN KEY(report_id) REFERENCES road_reports(id)
-    ));
+    )`);
 
-    await client.query(CREATE TABLE IF NOT EXISTS reward_events (
+    await client.query(`CREATE TABLE IF NOT EXISTS reward_events (
       id TEXT PRIMARY KEY,
       user_id TEXT,
       report_id TEXT,
@@ -67,7 +67,7 @@ async function initDb() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(user_id) REFERENCES users(id),
       FOREIGN KEY(report_id) REFERENCES road_reports(id)
-    ));
+    )`);
     console.log('Postgres Database Initialized.');
   } catch (err) {
     console.error('Error initializing Postgres DB:', err);
