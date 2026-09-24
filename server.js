@@ -1,10 +1,10 @@
-const express = require('express');
+﻿const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const { dbRun, dbGet, dbAll } = require('./database');
 
 const app = express();
@@ -161,7 +161,7 @@ app.get('/api/users', async (req, res) => {
   res.json(users);
 });
 
-// ── CLEARPATH AUTO-EXPIRY ENGINE ──────────────────────────────────────
+// â”€â”€ CLEARPATH AUTO-EXPIRY ENGINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Reports auto-expire after a type-specific TTL. Runs every 10 minutes.
 const REPORT_TTL_HOURS = {
   accident: 2, congestion: 3, blocked: 4, flooding: 6, pothole: 48, default: 4
@@ -188,14 +188,14 @@ async function runExpiryEngine() {
 runExpiryEngine();
 setInterval(runExpiryEngine, 10 * 60 * 1000);
 
-// ── HEALTH CHECK (for keep-alive pings) ──
+// â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', name: 'ClearPath Command Server', uptime: process.uptime() });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log('\n🛣️  ClearPath Command Server v1.0');
+  console.log('\nðŸ›£ï¸  ClearPath Command Server v1.0');
   console.log(`   Dashboard : http://localhost:${PORT}`);
   console.log(`   TTL rules : accident=2h | congestion=3h | blocked=4h | flooding=6h | pothole=48h\n`);
 });
