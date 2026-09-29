@@ -8,7 +8,7 @@
     "postinstall": "npm rebuild sqlite3 --build-from-source"
   },
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "keywords": [],
   "author": "Naveen",
