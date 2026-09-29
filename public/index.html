@@ -24,6 +24,69 @@
         html { font-size: 16px; scroll-behavior: smooth; }
         body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
 
+        .app-shell.hidden, .login-screen.hidden { display: none; }
+
+        .login-screen {
+            position: fixed; inset: 0; z-index: 2000;
+            display: flex; align-items: center; justify-content: center;
+            background: radial-gradient(circle at top, rgba(0,82,255,0.18), rgba(15,23,42,0.96) 45%, #020817 100%);
+            padding: 24px;
+        }
+        .login-panel {
+            width: min(100%, 430px);
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            box-shadow: 0 32px 80px rgba(2,6,23,0.55);
+            border-radius: 24px; padding: 32px 28px 26px; backdrop-filter: blur(12px);
+        }
+        .login-brand {
+            display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 10px;
+        }
+        .login-brand-icon {
+            width: 48px; height: 48px; border-radius: 14px;
+            display: flex; align-items: center; justify-content: center; font-size: 22px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            box-shadow: 0 20px 32px rgba(0,82,255,0.3);
+        }
+        .login-brand-text {
+            font-family: 'Calistoga', Georgia, serif; font-size: 30px; color: #FFF; letter-spacing: -0.02em;
+        }
+        .login-subtitle {
+            text-align: center; font-size: 13px; color: rgba(226, 232, 240, 0.72); margin-bottom: 24px;
+        }
+        .login-form { display: flex; flex-direction: column; gap: 16px; }
+        .login-field {
+            display: flex; flex-direction: column; gap: 8px;
+            color: rgba(255,255,255,0.85); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+        }
+        .login-field input {
+            width: 100%; border: 1px solid rgba(148,163,184,0.25); border-radius: 12px;
+            background: rgba(15,23,42,0.5); color: #FFF; padding: 14px 15px; font-size: 15px;
+            outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .login-field input:focus {
+            border-color: rgba(96, 165, 250, 0.9);
+            box-shadow: 0 0 0 4px rgba(96,165,250,0.12);
+        }
+        .login-submit {
+            border: none; border-radius: 12px; padding: 14px 18px; font-weight: 700; font-size: 15px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #FFF; cursor: pointer;
+            box-shadow: 0 18px 28px rgba(0,82,255,0.3); transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .login-submit:hover { transform: translateY(-1px); box-shadow: 0 22px 32px rgba(0,82,255,0.36); }
+        .login-helper {
+            font-size: 12px; color: rgba(148,163,184,0.8); text-align: center; margin-top: 6px;
+        }
+        .login-message {
+            min-height: 20px; font-size: 13px; color: #FDB4B4; text-align: center; margin-top: 2px;
+        }
+        .logout-btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 9px 16px; background: rgba(15,23,42,0.04); border: 1px solid var(--border);
+            border-radius: 10px; font-size: 13px; font-weight: 600; color: var(--fg);
+            cursor: pointer;
+        }
+
         /* SCROLLBAR */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -301,135 +364,161 @@
     </style>
 </head>
 <body>
-
-<aside class="sidebar">
-    <div class="sidebar-head">
-        <div class="sidebar-logo">
-            <div class="sidebar-logo-icon">⚡</div>
-            <span class="sidebar-logo-text">ClearPath</span>
+<div class="login-screen" id="login-screen">
+    <div class="login-panel">
+        <div class="login-brand">
+            <div class="login-brand-icon">⚡</div>
+            <div class="login-brand-text">ClearPath</div>
         </div>
-        <div class="sidebar-version">COMMAND SERVER v1.0</div>
+        <div class="login-subtitle">Command center access</div>
+
+        <form class="login-form" id="login-form">
+            <label class="login-field">
+                Username
+                <input type="text" id="login-username" placeholder="admin" autocomplete="username" required>
+            </label>
+            <label class="login-field">
+                Password
+                <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" required>
+            </label>
+            <button type="submit" class="login-submit">Sign in</button>
+            <div class="login-message" id="login-message"></div>
+            <div class="login-helper">Demo admin: admin / clearpath123</div>
+        </form>
     </div>
+</div>
 
-    <div class="sidebar-nav">
-        <div class="sidebar-label">Overview</div>
-        <div class="sidebar-link active" onclick="showSection('all',this)">
-            <span class="icon">📊</span> Dashboard
+<div class="app-shell hidden" id="app-shell">
+    <aside class="sidebar">
+        <div class="sidebar-head">
+            <div class="sidebar-logo">
+                <div class="sidebar-logo-icon">⚡</div>
+                <span class="sidebar-logo-text">ClearPath</span>
+            </div>
+            <div class="sidebar-version">COMMAND SERVER v1.0</div>
         </div>
 
-        <div class="sidebar-label">Data</div>
-        <div class="sidebar-link" onclick="showSection('reports',this)">
-            <span class="icon">🚨</span> Reports <span class="count" id="nav-reports">0</span>
-        </div>
-        <div class="sidebar-link" onclick="showSection('trips',this)">
-            <span class="icon">🚑</span> Signal-Aid <span class="count" id="nav-trips">0</span>
-        </div>
-        <div class="sidebar-link" onclick="showSection('users',this)">
-            <span class="icon">👥</span> Users <span class="count" id="nav-users">0</span>
-        </div>
-    </div>
+        <div class="sidebar-nav">
+            <div class="sidebar-label">Overview</div>
+            <div class="sidebar-link active" onclick="showSection('all',this)">
+                <span class="icon">📊</span> Dashboard
+            </div>
 
-    <div class="sidebar-ttl">
-        <div class="sidebar-label" style="margin:0 0 10px 0">Auto-Expiry TTL</div>
-        <div class="ttl-grid">
-            <div>💥 Accident</div><div><span>2 hrs</span></div>
-            <div>🚦 Congestion</div><div><span>3 hrs</span></div>
-            <div>🚧 Blocked</div><div><span>4 hrs</span></div>
-            <div>🌊 Flooding</div><div><span>6 hrs</span></div>
-            <div>🕳️ Pothole</div><div><span>48 hrs</span></div>
+            <div class="sidebar-label">Data</div>
+            <div class="sidebar-link" onclick="showSection('reports',this)">
+                <span class="icon">🚨</span> Reports <span class="count" id="nav-reports">0</span>
+            </div>
+            <div class="sidebar-link" onclick="showSection('trips',this)">
+                <span class="icon">🚑</span> Signal-Aid <span class="count" id="nav-trips">0</span>
+            </div>
+            <div class="sidebar-link" onclick="showSection('users',this)">
+                <span class="icon">👥</span> Users <span class="count" id="nav-users">0</span>
+            </div>
         </div>
-    </div>
 
-    <div class="sidebar-footer">
-        <div class="sidebar-live">
-            <div class="live-dot"></div> ClearPath Online
+        <div class="sidebar-ttl">
+            <div class="sidebar-label" style="margin:0 0 10px 0">Auto-Expiry TTL</div>
+            <div class="ttl-grid">
+                <div>💥 Accident</div><div><span>2 hrs</span></div>
+                <div>🚦 Congestion</div><div><span>3 hrs</span></div>
+                <div>🚧 Blocked</div><div><span>4 hrs</span></div>
+                <div>🌊 Flooding</div><div><span>6 hrs</span></div>
+                <div>🕳️ Pothole</div><div><span>48 hrs</span></div>
+            </div>
         </div>
-    </div>
-</aside>
 
-<main class="main">
-    <div class="header fade-in">
-        <div class="header-left">
-            <div class="header-greeting">Welcome back, Admin</div>
-            <h1 class="header-title">Command <em>Dashboard</em></h1>
+        <div class="sidebar-footer">
+            <div class="sidebar-live">
+                <div class="live-dot"></div> ClearPath Online
+            </div>
         </div>
-        <div class="header-actions">
-            <div class="header-time" id="live-clock"></div>
-            <button class="btn-refresh" onclick="fetchData()">↻ &nbsp;Refresh</button>
-        </div>
-    </div>
+    </aside>
 
-    <div class="stats-grid fade-in">
-        <div class="stat-card">
-            <div class="stat-icon">🚨</div>
-            <div class="stat-label">Total Reports</div>
-            <div class="stat-value" id="stat-reports">—</div>
-            <div class="stat-sub">Active incidents</div>
+    <main class="main">
+        <div class="header fade-in">
+            <div class="header-left">
+                <div class="header-greeting">Welcome back, Admin</div>
+                <h1 class="header-title">Command <em>Dashboard</em></h1>
+            </div>
+            <div class="header-actions">
+                <div class="header-time" id="live-clock"></div>
+                <button class="logout-btn" id="logout-btn" type="button">↩ Logout</button>
+                <button class="btn-refresh" onclick="fetchData()">↻ &nbsp;Refresh</button>
+            </div>
         </div>
-        <div class="stat-card">
-            <div class="stat-icon">✅</div>
-            <div class="stat-label">Verified</div>
-            <div class="stat-value" id="stat-verified">—</div>
-            <div class="stat-sub">Admin confirmed</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-icon">🚑</div>
-            <div class="stat-label">Dispatches</div>
-            <div class="stat-value" id="stat-trips">—</div>
-            <div class="stat-sub">Signal-Aid trips</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-icon">👥</div>
-            <div class="stat-label">Users</div>
-            <div class="stat-value" id="stat-users">—</div>
-            <div class="stat-sub">Registered accounts</div>
-        </div>
-    </div>
 
-    <!-- Reports -->
-    <div class="section fade-in" id="reports-section">
-        <div class="section-header">
-            <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Road Reports</span></div>
-            <span class="section-count" id="reports-count"></span>
+        <div class="stats-grid fade-in">
+            <div class="stat-card">
+                <div class="stat-icon">🚨</div>
+                <div class="stat-label">Total Reports</div>
+                <div class="stat-value" id="stat-reports">—</div>
+                <div class="stat-sub">Active incidents</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-label">Verified</div>
+                <div class="stat-value" id="stat-verified">—</div>
+                <div class="stat-sub">Admin confirmed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🚑</div>
+                <div class="stat-label">Dispatches</div>
+                <div class="stat-value" id="stat-trips">—</div>
+                <div class="stat-sub">Signal-Aid trips</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">👥</div>
+                <div class="stat-label">Users</div>
+                <div class="stat-value" id="stat-users">—</div>
+                <div class="stat-sub">Registered accounts</div>
+            </div>
         </div>
-        <div class="card"><div class="card-inner">
-            <table>
-                <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Status</th><th>Update</th></tr></thead>
-                <tbody id="reports-tbody"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody>
-            </table>
-        </div></div>
-    </div>
 
-    <div class="two-col">
-        <!-- Trips -->
-        <div class="section fade-in" id="trips-section">
+        <!-- Reports -->
+        <div class="section fade-in" id="reports-section">
             <div class="section-header">
-                <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Signal-Aid Trips</span></div>
-                <span class="section-count" id="trips-count"></span>
+                <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Road Reports</span></div>
+                <span class="section-count" id="reports-count"></span>
             </div>
             <div class="card"><div class="card-inner">
                 <table>
-                    <thead><tr><th>Driver</th><th>Criticality</th><th>Time</th><th>Distance</th></tr></thead>
-                    <tbody id="trips-tbody"><tr class="empty-row"><td colspan="4">No trips yet</td></tr></tbody>
+                    <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Status</th><th>Update</th></tr></thead>
+                    <tbody id="reports-tbody"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody>
                 </table>
             </div></div>
         </div>
 
-        <!-- Users -->
-        <div class="section fade-in" id="users-section">
-            <div class="section-header">
-                <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Registered Users</span></div>
-                <span class="section-count" id="users-count"></span>
+        <div class="two-col">
+            <!-- Trips -->
+            <div class="section fade-in" id="trips-section">
+                <div class="section-header">
+                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Signal-Aid Trips</span></div>
+                    <span class="section-count" id="trips-count"></span>
+                </div>
+                <div class="card"><div class="card-inner">
+                    <table>
+                        <thead><tr><th>Driver</th><th>Criticality</th><th>Time</th><th>Distance</th></tr></thead>
+                        <tbody id="trips-tbody"><tr class="empty-row"><td colspan="4">No trips yet</td></tr></tbody>
+                    </table>
+                </div></div>
             </div>
-            <div class="card"><div class="card-inner">
-                <table>
-                    <thead><tr><th>Name</th><th>Phone / ID</th><th>Role</th><th>Points</th></tr></thead>
-                    <tbody id="users-tbody"><tr class="empty-row"><td colspan="4">No users yet</td></tr></tbody>
-                </table>
-            </div></div>
+
+            <!-- Users -->
+            <div class="section fade-in" id="users-section">
+                <div class="section-header">
+                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Registered Users</span></div>
+                    <span class="section-count" id="users-count"></span>
+                </div>
+                <div class="card"><div class="card-inner">
+                    <table>
+                        <thead><tr><th>Name</th><th>Phone / ID</th><th>Role</th><th>Points</th></tr></thead>
+                        <tbody id="users-tbody"><tr class="empty-row"><td colspan="4">No users yet</td></tr></tbody>
+                    </table>
+                </div></div>
+            </div>
         </div>
-    </div>
-</main>
+    </main>
+</div>
 
 <div class="modal-overlay" id="photo-modal" onclick="closeModal()">
     <div class="modal" onclick="event.stopPropagation()">
@@ -441,12 +530,56 @@
 <script>
     const socket = io();
     const TYPE_ICONS = { accident:'💥', congestion:'🚦', blocked:'🚧', flooding:'🌊', pothole:'🕳️' };
-    socket.on('admin_refresh', fetchData);
+    const ADMIN_USERNAME = 'admin';
+    const ADMIN_PASSWORD = 'clearpath123';
+    const SESSION_KEY = 'clearpath_admin_session';
+
+    const appShell = document.getElementById('app-shell');
+    const loginScreen = document.getElementById('login-screen');
+    const loginForm = document.getElementById('login-form');
+    const loginMessage = document.getElementById('login-message');
+    const logoutBtn = document.getElementById('logout-btn');
+
+    function setAuthState(isAuthenticated) {
+        if (isAuthenticated) {
+            localStorage.setItem(SESSION_KEY, 'true');
+            appShell.classList.remove('hidden');
+            loginScreen.classList.add('hidden');
+            fetchData();
+        } else {
+            localStorage.removeItem(SESSION_KEY);
+            appShell.classList.add('hidden');
+            loginScreen.classList.remove('hidden');
+            loginForm.reset();
+            loginMessage.textContent = '';
+        }
+    }
+
+    loginForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const username = document.getElementById('login-username').value.trim();
+        const password = document.getElementById('login-password').value;
+
+        if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+            setAuthState(true);
+            return;
+        }
+
+        loginMessage.textContent = 'Invalid username or password.';
+    });
+
+    logoutBtn.addEventListener('click', () => setAuthState(false));
+
+    socket.on('admin_refresh', function() {
+        if (localStorage.getItem(SESSION_KEY) === 'true') fetchData();
+    });
 
     // Live clock
     function updateClock() {
         const now = new Date();
-        document.getElementById('live-clock').textContent =
+        const clock = document.getElementById('live-clock');
+        if (!clock) return;
+        clock.textContent =
             now.toLocaleDateString('en-IN', { day:'2-digit', month:'short' }) + '  •  ' +
             now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
     }
@@ -568,7 +701,11 @@
         });
     }
 
-    fetchData();
+    if (localStorage.getItem(SESSION_KEY) === 'true') {
+        setAuthState(true);
+    } else {
+        setAuthState(false);
+    }
 </script>
 </body>
 </html>
