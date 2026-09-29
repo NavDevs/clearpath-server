@@ -5,7 +5,13 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const { randomUUID: uuidv4 } = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 const { dbRun, dbGet, dbAll, initPromise } = require('./database');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 const app = express();
 const server = http.createServer(app);
@@ -13,17 +19,10 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'public'))); // Serve the Admin UI
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
-});
-const upload = multer({ storage });
-
-const fs = require('fs');
-if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
+const upload = multer({ storage: multer.memoryStorage() });
+const BUCKET = 'report-photos';
 
 // Global Real-time
 io.on('connection', (socket) => {
@@ -92,8 +91,22 @@ app.get('/api/reports', async (req, res) => {
 app.post('/api/reports', upload.single('photo'), async (req, res) => {
   const { user_id, type, description, latitude, longitude, address, points } = req.body;
   const id = uuidv4();
-  const photo_url = req.file ? `/uploads/${req.file.filename}` : null;
-  
+  let photo_url = null;
+
+  if (req.file) {
+    const fileName = `${id}-${Date.now()}${path.extname(req.file.originalname)}`;
+    const { error } = await supabase.storage
+      .from(BUCKET)
+      .upload(fileName, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
+    
+    if (!error) {
+      const { data } = supabase.storage.from(BUCKET).getPublicUrl(fileName);
+      photo_url = data.publicUrl;
+    } else {
+      console.error('Supabase upload error:', error);
+    }
+  }
+
   await dbRun(`INSERT INTO road_reports 
     (id, user_id, type, description, latitude, longitude, address, photo_url, points) 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
