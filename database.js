@@ -1,4 +1,4 @@
-﻿const { Pool } = require('pg');
+const { Pool } = require('pg');
 const path = require('path');
 
 const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/clearpath';
@@ -128,6 +128,11 @@ async function initDb() {
       FOREIGN KEY(user_id) REFERENCES users(id)
     )`);
 
+    // Safely add the new lifecycle column without breaking existing constraints
+    try {
+      await client.query("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'PENDING_AI'");
+    } catch (e) {}
+
     await client.query(`CREATE TABLE IF NOT EXISTS emergency_trips (
       id TEXT PRIMARY KEY,
       driver_id TEXT,
@@ -143,6 +148,12 @@ async function initDb() {
       FOREIGN KEY(report_id) REFERENCES road_reports(id)
     )`);
 
+    // Safely upgrade emergency_trips for the new live-response workflow
+    try {
+      await client.query("ALTER TABLE emergency_trips ADD COLUMN dispatch_id TEXT");
+      await client.query("ALTER TABLE emergency_trips ADD COLUMN status TEXT DEFAULT 'completed'");
+    } catch (e) {}
+
     await client.query(`CREATE TABLE IF NOT EXISTS reward_events (
       id TEXT PRIMARY KEY,
       user_id TEXT,
@@ -154,8 +165,33 @@ async function initDb() {
       FOREIGN KEY(report_id) REFERENCES road_reports(id)
     )`);
 
+    // PHASE 2: New AI Analyses Table
+    await client.query(`CREATE TABLE IF NOT EXISTS ai_analyses (
+      id TEXT PRIMARY KEY,
+      report_id TEXT REFERENCES road_reports(id),
+      detected_type TEXT,
+      severity TEXT,
+      confidence DOUBLE PRECISION,
+      people_injured BOOLEAN,
+      road_blocked BOOLEAN,
+      emergency_recommended BOOLEAN,
+      raw_reasoning TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // PHASE 2: New Dispatches Table
+    await client.query(`CREATE TABLE IF NOT EXISTS dispatches (
+      id TEXT PRIMARY KEY,
+      report_id TEXT REFERENCES road_reports(id),
+      required_vehicle TEXT CHECK(required_vehicle IN ('ambulance', 'fire')),
+      status TEXT DEFAULT 'available' CHECK(status IN ('available', 'accepted', 'completed', 'cancelled')),
+      driver_id TEXT REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+
     client.release();
-    console.log('Postgres Database Initialized.');
+    console.log('Postgres Database Initialized (ClearPath v2 Schema).');
     return;
   } catch (err) {
     console.warn('Postgres unavailable, falling back to SQLite:', err.message || err);

@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
@@ -88,6 +88,8 @@ app.get('/api/reports', async (req, res) => {
   res.json(reports);
 });
 
+const { analyzeIncident } = require('./ai_service');
+
 app.post('/api/reports', upload.single('photo'), async (req, res) => {
   const { user_id, type, description, latitude, longitude, address, points } = req.body;
   const id = uuidv4();
@@ -107,9 +109,10 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     }
   }
 
+  // Initial insert as PENDING_AI
   await dbRun(`INSERT INTO road_reports 
-    (id, user_id, type, description, latitude, longitude, address, photo_url, points) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_AI')`,
     [id, user_id, type, description, latitude, longitude, address, photo_url, points]
   );
   
@@ -120,9 +123,18 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   );
   await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [points, user_id]);
   
-  io.emit('new_incident', newReport);
+  // Phase 4: Trigger the AI engine in the background asynchronously
+  // We do NOT `await` this, so the citizen's phone gets a fast response.
+  analyzeIncident(newReport, (event, data) => io.emit(event, data))
+    .catch(err => console.error("AI Pipeline failed:", err));
+
+  // Note: We no longer emit 'new_incident' here. The Decision Engine will emit it 
+  // later once verified, to ensure unverified junk doesn't appear on the map immediately.
+  
   io.emit('points_updated', { user_id, points });
   notifyAdmin();
+  
+  // Return the pending report immediately to the citizen's app
   res.json(newReport);
 });
 
@@ -134,6 +146,48 @@ app.post('/api/reports/:id/status', async (req, res) => {
   io.emit('report_updated', updatedReport);
   notifyAdmin();
   res.json(updatedReport);
+});
+
+// DISPATCHES & ACCEPTANCE
+app.post('/api/dispatches/:id/accept', async (req, res) => {
+  const dispatchId = req.params.id;
+  const { driver_id, vehicle_no } = req.body;
+
+  // 1. Concurrency Protection (Phase 12 / 40)
+  // Ensure the dispatch is still 'available'
+  const dispatch = await dbGet('SELECT * FROM dispatches WHERE id = ?', [dispatchId]);
+  if (!dispatch) return res.status(404).json({ error: 'Dispatch not found' });
+  if (dispatch.status !== 'available') {
+    return res.status(409).json({ error: 'Dispatch already accepted by another driver' });
+  }
+
+  // 2. Mark dispatch as accepted
+  await dbRun("UPDATE dispatches SET status = 'accepted', driver_id = ? WHERE id = ? AND status = 'available'", 
+    [driver_id, dispatchId]
+  );
+  
+  // Verify the atomic update succeeded (in case someone beat us to it by milliseconds)
+  const verify = await dbGet("SELECT status, driver_id FROM dispatches WHERE id = ?", [dispatchId]);
+  if (verify.driver_id !== driver_id) {
+    return res.status(409).json({ error: 'Dispatch already accepted by another driver' });
+  }
+
+  // 3. Create the Emergency Trip (Phase 13 / 19)
+  const tripId = uuidv4();
+  await dbRun(`INSERT INTO emergency_trips 
+    (id, dispatch_id, driver_id, vehicle_no, report_id, status)
+    VALUES (?, ?, ?, ?, ?, 'en_route')`,
+    [tripId, dispatchId, driver_id, vehicle_no, dispatch.report_id]
+  );
+
+  const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [tripId]);
+  
+  // Broadcast to other drivers to remove it from their screens
+  io.emit('dispatch.accepted', { dispatchId, driver_id });
+  io.emit('trip.started', trip);
+  notifyAdmin();
+
+  res.json(trip);
 });
 
 // TRIPS
@@ -159,6 +213,35 @@ app.post('/api/trips', async (req, res) => {
   
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [id]);
   io.emit('trip_completed', trip);
+  notifyAdmin();
+  res.json(trip);
+});
+
+// PHASE 12: Live GPS location broadcast
+app.post('/api/trips/:id/location', async (req, res) => {
+  const { latitude, longitude } = req.body;
+  io.emit('trip.location_updated', { tripId: req.params.id, latitude, longitude });
+  res.json({ ok: true });
+});
+
+// PHASE 14: Trip state transitions (arrived / completed)
+app.patch('/api/trips/:id/status', async (req, res) => {
+  const { status, driver_id } = req.body;
+  const allowed = ['en_route', 'arrived', 'completed'];
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+
+  await dbRun("UPDATE emergency_trips SET status = ? WHERE id = ? AND driver_id = ?", [status, req.params.id, driver_id]);
+  const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
+
+  if (status === 'completed') {
+    if (trip && trip.dispatch_id) {
+      await dbRun("UPDATE dispatches SET status = 'completed' WHERE id = ?", [trip.dispatch_id]);
+    }
+    io.emit('trip.completed', trip);
+  } else if (status === 'arrived') {
+    io.emit('trip.arrived', trip);
+  }
+
   notifyAdmin();
   res.json(trip);
 });
