@@ -5,6 +5,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const { randomUUID: uuidv4 } = require('crypto');
+const bcrypt = require('bcrypt');
 const { createClient } = require('@supabase/supabase-js');
 const { dbRun, dbGet, dbAll, initPromise } = require('./database');
 
@@ -13,15 +14,43 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const SALT_ROUNDS = 10;
+
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { 
+  cors: { 
+    origin: process.env.CORS_ORIGIN || '*',
+    methods: ['GET', 'POST', 'PATCH'],
+    credentials: true
+  } 
+});
 
-app.use(cors());
+// Phase 18: Restrict CORS to allowed origins
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST', 'PATCH'],
+  credentials: true
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public'))); // Serve the Admin UI
 
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    // Phase 18: Only accept image files
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, WebP, HEIC images allowed.'), false);
+    }
+  },
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB max
+  }
+});
 const BUCKET = 'report-photos';
 
 // Global Real-time
@@ -42,8 +71,11 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ error: 'Phone number already registered' });
   }
   
+  // Hash password with bcrypt
+  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  
   const id = uuidv4();
-  await dbRun('INSERT INTO users (id, role, phone, name, password) VALUES (?, ?, ?, ?, ?)', [id, 'citizen', phone, name, password]);
+  await dbRun('INSERT INTO users (id, role, phone, name, password) VALUES (?, ?, ?, ?, ?)', [id, 'citizen', phone, name, passwordHash]);
   const user = await dbGet('SELECT * FROM users WHERE id = ?', [id]);
   notifyAdmin();
   
@@ -58,7 +90,9 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(404).json({ error: 'User not found' });
   }
   
-  if (user.password !== password) {
+  // Compare password with bcrypt
+  const passwordMatch = await bcrypt.compare(password, user.password);
+  if (!passwordMatch) {
     return res.status(401).json({ error: 'Incorrect password' });
   }
   
@@ -136,6 +170,19 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   
   // Return the pending report immediately to the citizen's app
   res.json(newReport);
+});
+
+// Phase 18: Multer error handling middleware
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File too large. Max size is 5MB.' });
+    }
+    return res.status(400).json({ error: `Upload error: ${err.message}` });
+  } else if (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  next();
 });
 
 // Admin endpoint to verify/resolve reports
@@ -257,6 +304,66 @@ app.get('/api/users', async (req, res) => {
   res.json(users);
 });
 
+// Driver availability
+app.patch('/api/users/:id/availability', async (req, res) => {
+  const { availability } = req.body;
+  if (!['OFFLINE','AVAILABLE','BUSY'].includes(availability)) return res.status(400).json({ error: 'Invalid availability' });
+  await dbRun('UPDATE users SET availability = ? WHERE id = ?', [availability, req.params.id]);
+  const user = await dbGet('SELECT id, availability, driver_id, vehicle_no FROM users WHERE id = ?', [req.params.id]);
+  io.emit('driver.availability_updated', user);
+  res.json(user);
+});
+
+// GET available dispatches (Signal-Aid loads on app start)
+app.get('/api/dispatches', async (req, res) => {
+  const dispatches = await dbAll(`
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address
+    FROM dispatches d
+    JOIN road_reports r ON d.report_id = r.id
+    WHERE d.status = 'available'
+    ORDER BY d.created_at DESC
+  `);
+  res.json(dispatches);
+});
+
+// GET route via OSRM (no API key needed)
+app.get('/api/route', async (req, res) => {
+  const { fromLat, fromLon, toLat, toLon } = req.query;
+  if (!fromLat || !fromLon || !toLat || !toLon) return res.status(400).json({ error: 'Missing coords' });
+  try {
+    const osrmUrl = `http://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=false&steps=false`;
+    const response = await fetch(osrmUrl, { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error('OSRM error');
+    const data = await response.json();
+    const route = data.routes[0];
+    const distanceKm = (route.distance / 1000).toFixed(2);
+    const durationMin = Math.ceil(route.duration / 60);
+    // Estimate signal count: approx 1.5 signals per km in urban areas
+    const signalCount = Math.max(1, Math.round(distanceKm * 1.5));
+    res.json({ distanceKm: parseFloat(distanceKm), durationMin, signalCount });
+  } catch (err) {
+    // Fallback: estimate based on straight-line distance
+    const R = 6371;
+    const dLat = (toLat - fromLat) * Math.PI / 180;
+    const dLon = (toLon - fromLon) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(fromLat * Math.PI/180) * Math.cos(toLat * Math.PI/180) * Math.sin(dLon/2)**2;
+    const distanceKm = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(2));
+    const durationMin = Math.ceil(distanceKm / 0.5); // assume 30 km/h avg speed
+    const signalCount = Math.max(1, Math.round(distanceKm * 1.5));
+    res.json({ distanceKm, durationMin, signalCount, fallback: true });
+  }
+});
+
+// GET active trip for driver (restart persistence)
+app.get('/api/trips/active/:driver_id', async (req, res) => {
+  const trip = await dbGet(
+    "SELECT * FROM emergency_trips WHERE driver_id = ? AND status IN ('en_route','arrived') ORDER BY started_at DESC LIMIT 1",
+    [req.params.driver_id]
+  );
+  res.json(trip || null);
+});
+
+
 // â”€â”€ CLEARPATH AUTO-EXPIRY ENGINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Reports auto-expire after a type-specific TTL. Runs every 10 minutes.
 const REPORT_TTL_HOURS = {
@@ -264,21 +371,32 @@ const REPORT_TTL_HOURS = {
 };
 
 async function runExpiryEngine() {
-  const reports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE status != 'resolved'");
+  // Step 1: Move old ACTIVE reports to RECHECK
+  const activeReports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE lifecycle_state = 'ACTIVE' OR lifecycle_state = 'VERIFIED'");
   const now = Date.now();
-  let count = 0;
-  for (const r of reports) {
-    const ttl = REPORT_TTL_HOURS[r.type] || REPORT_TTL_HOURS.default;
-    const ageHrs = (now - new Date(r.created_at + 'Z').getTime()) / 3600000;
+  const RECHECK_TTL_HOURS = { accident: 2, fire: 1, congestion: 3, blocked: 4, flooding: 6, pothole: 48, default: 4 };
+  
+  for (const r of activeReports) {
+    const ttl = RECHECK_TTL_HOURS[r.type] || RECHECK_TTL_HOURS.default;
+    const ageHrs = (now - new Date(r.created_at + (r.created_at.includes('Z') ? '' : 'Z')).getTime()) / 3600000;
     if (ageHrs >= ttl) {
-      await dbRun("UPDATE road_reports SET status = 'resolved' WHERE id = ?", [r.id]);
-      const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
-      io.emit('report_updated', updated);
-      count++;
-      console.log(`[ClearPath] Auto-resolved: ${r.type} (${ageHrs.toFixed(1)}h old)`);
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'RECHECK', status = 'pending' WHERE id = ?", [r.id]);
+      console.log(`[ClearPath] Recheck flagged: ${r.type} (${ageHrs.toFixed(1)}h old)`);
     }
   }
-  if (count > 0) notifyAdmin();
+
+  // Step 2: Auto-resolve old RECHECK reports (after 30 more min)
+  const recheckReports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE lifecycle_state = 'RECHECK'");
+  for (const r of recheckReports) {
+    const ageHrs = (now - new Date(r.created_at + (r.created_at.includes('Z') ? '' : 'Z')).getTime()) / 3600000;
+    const ttl = (RECHECK_TTL_HOURS[r.type] || RECHECK_TTL_HOURS.default) + 0.5;
+    if (ageHrs >= ttl) {
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
+      const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
+      io.emit('report_updated', updated);
+      console.log(`[ClearPath] Auto-resolved: ${r.type}`);
+    }
+  }
 }
 
 initPromise.then(() => { runExpiryEngine(); setInterval(runExpiryEngine, 10 * 60 * 1000); });

@@ -113,6 +113,8 @@ async function initDb() {
       await client.query("ALTER TABLE users ADD COLUMN password TEXT");
     } catch (e) {}
 
+    try { await client.query("ALTER TABLE users ADD COLUMN availability TEXT DEFAULT 'OFFLINE'"); } catch(e) {}
+
     await client.query(`CREATE TABLE IF NOT EXISTS road_reports (
       id TEXT PRIMARY KEY,
       user_id TEXT,
