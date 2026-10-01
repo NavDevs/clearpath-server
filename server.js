@@ -245,7 +245,7 @@ app.post('/api/auth/driver/register', async (req, res) => {
     return res.status(400).json({ error: 'Driver ID must be 3-20 letters, numbers or dashes (e.g. DRV-204)' });
   }
   if (!VEHICLE_NO_RE.test(vehicle_no)) {
-    return res.status(400).json({ error: 'Vehicle number must be 4-20 letters, numbers, spaces or dashes (e.g. AMB-1187)' });
+    return res.status(400).json({ error: 'Vehicle number must be 3-20 letters, numbers, spaces or dashes (e.g. AMB-1187)' });
   }
 
   if (!['ambulance', 'fire'].includes(vehicle_type)) {
