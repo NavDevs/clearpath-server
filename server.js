@@ -4,16 +4,43 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
+
+// Load backend/.env (gitignored) when present so local runs are configured without
+// adding a dependency. Platform env vars always win; nothing is overwritten.
+// Must run before ./database is required, because it reads DATABASE_URL on load.
+(() => {
+  try {
+    const envFile = path.join(__dirname, '.env');
+    if (!fs.existsSync(envFile)) return;
+    for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+      const match = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)$/);
+      if (!match) continue;
+      const key = match[1];
+      let value = match[2].trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (process.env[key] === undefined) process.env[key] = value;
+    }
+  } catch (err) {
+    console.warn('Could not read backend/.env:', err.message || err);
+  }
+})();
+
 const { randomUUID: uuidv4 } = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const { dbRun, dbGet, dbAll, initPromise } = require('./database');
+const { resetAllDataAndPhotos } = require('./maintenance');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// Photo storage is optional. The Command Server must always boot and serve the
+// admin dashboard, so an unconfigured Supabase only disables photo uploads.
+const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+  : null;
+if (!supabase) console.warn('[ClearPath] Supabase storage not configured - report photos will be skipped.');
 
 const SALT_ROUNDS = 10;
 const JWT_SECRET = process.env.JWT_SECRET || 'clearpath-dev-secret-change-in-production';
@@ -319,8 +346,9 @@ app.post('/api/admin/driver-requests/:id/reject', authMiddleware, requireRole('a
 // Get all drivers (for admin)
 app.get('/api/admin/drivers', authMiddleware, requireRole('admin'), async (req, res) => {
   const drivers = await dbAll(`
-    SELECT id, name, phone, driver_id, vehicle_no, vehicle_type, organization, 
-           approval_status, availability, points, created_at
+    SELECT id, name, phone, driver_id, vehicle_no, vehicle_type, organization,
+           approval_status, availability, current_latitude, current_longitude,
+           last_location_update, points, created_at
     FROM users 
     WHERE role = 'emergency_driver'
     ORDER BY created_at DESC
@@ -328,11 +356,23 @@ app.get('/api/admin/drivers', authMiddleware, requireRole('admin'), async (req, 
   res.json(drivers);
 });
 
+// Get all users (for admin) — never expose password hashes.
+app.get('/api/admin/users', authMiddleware, requireRole('admin'), async (req, res) => {
+  const users = await dbAll(`
+    SELECT id, role, name, phone, driver_id, vehicle_no, vehicle_type, organization,
+           approval_status, availability, points, created_at
+    FROM users
+    ORDER BY created_at DESC
+  `);
+  res.json(users);
+});
+
 // Get all incidents (for admin)
 app.get('/api/admin/incidents', authMiddleware, requireRole('admin'), async (req, res) => {
   const incidents = await dbAll(`
     SELECT r.*, u.name as reporter_name, u.phone as reporter_phone,
-           ai.detected_type, ai.confidence, ai.severity, ai.emergency_recommended
+           ai.detected_type, ai.confidence, ai.severity, ai.emergency_recommended,
+           ai.people_injured, ai.road_blocked, ai.raw_reasoning
     FROM road_reports r
     LEFT JOIN users u ON r.user_id = u.id
     LEFT JOIN ai_analyses ai ON ai.report_id = r.id
@@ -365,6 +405,53 @@ app.get('/api/admin/trips', authMiddleware, requireRole('admin'), async (req, re
     ORDER BY et.started_at DESC
   `);
   res.json(trips);
+});
+
+// Manage an emergency assignment (admin): cancel it, or re-open it for
+// re-dispatch. Both cases release the assigned driver back to AVAILABLE.
+app.patch('/api/admin/dispatches/:id/status', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { status } = req.body;
+  if (!['available', 'cancelled'].includes(status)) {
+    return res.status(400).json({ error: "status must be 'available' (re-dispatch) or 'cancelled'" });
+  }
+
+  const dispatch = await dbGet('SELECT * FROM dispatches WHERE id = ?', [req.params.id]);
+  if (!dispatch) return res.status(404).json({ error: 'Dispatch not found' });
+
+  // Release whoever was assigned, and close their trip.
+  if (dispatch.driver_id) {
+    await dbRun('UPDATE users SET availability = ? WHERE id = ?', ['AVAILABLE', dispatch.driver_id]);
+    await dbRun("UPDATE emergency_trips SET status = 'completed' WHERE dispatch_id = ? AND status IN ('en_route','arrived')", [dispatch.id]);
+    io.emit('driver.availability_updated', { id: dispatch.driver_id, availability: 'AVAILABLE' });
+  }
+
+  await dbRun('UPDATE dispatches SET status = ?, driver_id = ?, updated_at = ? WHERE id = ?',
+    [status, null, new Date().toISOString(), dispatch.id]);
+
+  // Keep the incident lifecycle consistent with its assignment.
+  let incident = null;
+  if (dispatch.report_id) {
+    const nextState = status === 'cancelled' ? 'VERIFIED' : 'DISPATCHED';
+    await dbRun('UPDATE road_reports SET lifecycle_state = ?, status = ? WHERE id = ?',
+      [nextState, 'verified', dispatch.report_id]);
+    incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
+    if (incident) io.emit('report_updated', incident);
+  }
+
+  const updated = await dbGet(`
+    SELECT d.*, r.type as incident_type, r.address, u.name as driver_name, u.vehicle_no
+    FROM dispatches d
+    JOIN road_reports r ON d.report_id = r.id
+    LEFT JOIN users u ON d.driver_id = u.id
+    WHERE d.id = ?`, [dispatch.id]
+  );
+
+  // Spec: the Signal-Aid app is told when a request is cancelled.
+  if (status === 'cancelled') io.emit('dispatch.cancelled', { dispatchId: dispatch.id, report_id: dispatch.report_id });
+  else io.emit('dispatch.created', updated);
+  notifyAdmin();
+
+  res.json({ dispatch: updated, incident });
 });
 
 // Update incident status (admin)
@@ -434,6 +521,28 @@ app.post('/api/admin/incidents/:id/reject', authMiddleware, requireRole('admin')
   res.json(updated);
 });
 
+// Admin: wipe all operational data (incidents, trips, dispatches, approvals, users
+// and uploaded photos) so the system can be demoed from a clean slate.
+// Guarded by the admin role AND an explicit confirmation phrase, so it can never
+// fire from a stray request or an accidental click.
+app.post('/api/admin/reset-data', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { confirm } = req.body || {};
+  if (confirm !== 'RESET_ALL_DATA') {
+    return res.status(400).json({ error: "Send { \"confirm\": \"RESET_ALL_DATA\" } to wipe all data" });
+  }
+
+  try {
+    const summary = await resetAllDataAndPhotos(supabase);
+    console.log('[ClearPath] Data reset:', JSON.stringify(summary));
+    io.emit('data_reset');
+    notifyAdmin();
+    res.json(summary);
+  } catch (err) {
+    console.error('[ClearPath] Data reset failed:', err.message || err);
+    res.status(500).json({ error: 'Reset failed: ' + (err.message || String(err)) });
+  }
+});
+
 // Admin: Get system stats
 app.get('/api/admin/stats', authMiddleware, requireRole('admin'), async (req, res) => {
   const totalUsers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'citizen'");
@@ -478,7 +587,7 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   const id = uuidv4();
   let photo_url = null;
 
-  if (req.file) {
+  if (req.file && supabase) {
     const fileName = `${id}-${Date.now()}${path.extname(req.file.originalname)}`;
     const { error } = await supabase.storage
       .from(BUCKET)
@@ -490,6 +599,8 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     } else {
       console.error('Supabase upload error:', error);
     }
+  } else if (req.file) {
+    console.warn('Photo upload skipped: Supabase storage is not configured.');
   }
 
   // Spec: initial incident status must be ACTIVE.
@@ -542,7 +653,7 @@ app.post('/api/reports/:id/status', async (req, res) => {
 // DISPATCHES & ACCEPTANCE (atomic first-driver-wins)
 app.post('/api/dispatches/:id/accept', async (req, res) => {
   const dispatchId = req.params.id;
-  const { driver_id, vehicle_no } = req.body;
+  const { driver_id, vehicle_no, criticality: requestedCriticality } = req.body;
 
   const dispatch = await dbGet('SELECT * FROM dispatches WHERE id = ?', [dispatchId]);
   if (!dispatch) return res.status(404).json({ error: 'Dispatch not found' });
@@ -580,15 +691,45 @@ app.post('/api/dispatches/:id/accept', async (req, res) => {
   await dbRun('UPDATE users SET availability = ? WHERE id = ?', ['BUSY', driver.id]);
   await dbRun("UPDATE road_reports SET lifecycle_state = 'ACCEPTED', status = 'verified' WHERE id = ?", [dispatch.report_id]);
 
+  // Enrich the trip with real evidence so admin monitoring never shows blank rows.
+  // Criticality comes from the stored AI severity, distance from the driver's last
+  // known position to the incident, confidence from the AI analysis. Nothing is invented:
+  // if the backend has no evidence for a field, the field stays NULL.
+  const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
+  const analysis = await dbGet(
+    'SELECT severity, confidence FROM ai_analyses WHERE report_id = ? ORDER BY created_at DESC LIMIT 1',
+    [dispatch.report_id]
+  );
+  // Criticality priority: the accepting driver's choice, then the stored AI severity,
+  // then 'high' — every dispatch reaching this point is a human/AI verified emergency.
+  const SEVERITY_TO_CRITICALITY = { LOW: 'low', MEDIUM: 'medium', HIGH: 'high', CRITICAL: 'critical' };
+  const REQUESTED_TO_CRITICALITY = { normal: 'low', low: 'low', medium: 'medium', high: 'high', critical: 'critical' };
+  const criticality =
+    REQUESTED_TO_CRITICALITY[String(requestedCriticality || '').toLowerCase()] ||
+    SEVERITY_TO_CRITICALITY[String(analysis?.severity || '').toUpperCase()] ||
+    'high';
+  const confidence = analysis && analysis.confidence != null
+    ? Math.round(Number(analysis.confidence) * 100)
+    : null;
+  let distance = null;
+  if (
+    driver.current_latitude != null && driver.current_longitude != null &&
+    incident && incident.latitude != null && incident.longitude != null
+  ) {
+    distance = Number(haversineKm(
+      Number(driver.current_latitude), Number(driver.current_longitude),
+      Number(incident.latitude), Number(incident.longitude)
+    ).toFixed(2));
+  }
+
   const tripId = uuidv4();
   await dbRun(`INSERT INTO emergency_trips
-    (id, dispatch_id, driver_id, vehicle_no, report_id, status)
-    VALUES (?, ?, ?, ?, ?, 'en_route')`,
-    [tripId, dispatchId, driver.id, vehicle_no, dispatch.report_id]
+    (id, dispatch_id, driver_id, vehicle_no, report_id, status, criticality, confidence, distance)
+    VALUES (?, ?, ?, ?, ?, 'en_route', ?, ?, ?)`,
+    [tripId, dispatchId, driver.id, vehicle_no, dispatch.report_id, criticality, confidence, distance]
   );
 
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [tripId]);
-  const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
 
   io.emit('dispatch.accepted', { dispatchId, driver_id: driver.id });
   io.emit('trip.started', trip);
@@ -733,13 +874,14 @@ app.get('/api/users', async (req, res) => {
   res.json(users);
 });
 
-// Driver availability
-app.patch('/api/users/:id/availability', async (req, res) => {
+// Driver availability (admin-managed vehicle availability)
+app.patch('/api/users/:id/availability', authMiddleware, requireRole('admin'), async (req, res) => {
   const { availability } = req.body;
   if (!['OFFLINE','AVAILABLE','BUSY'].includes(availability)) return res.status(400).json({ error: 'Invalid availability' });
   await dbRun('UPDATE users SET availability = ? WHERE id = ?', [availability, req.params.id]);
   const user = await dbGet('SELECT id, availability, driver_id, vehicle_no FROM users WHERE id = ?', [req.params.id]);
   io.emit('driver.availability_updated', user);
+  notifyAdmin();
   res.json(user);
 });
 
@@ -866,7 +1008,11 @@ async function runExpiryEngine() {
   }
 }
 
-initPromise.then(() => { runExpiryEngine(); setInterval(runExpiryEngine, 10 * 60 * 1000); });
+// The expiry sweep must never take the server down: a schema hiccup here would
+// otherwise become an unhandled rejection and kill the process on boot.
+const runExpiryEngineSafely = () =>
+  runExpiryEngine().catch((err) => console.error('[ClearPath] Expiry engine failed:', err.message || err));
+initPromise.then(() => { runExpiryEngineSafely(); setInterval(runExpiryEngineSafely, 10 * 60 * 1000); });
 
 // â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
 app.get('/health', (req, res) => {

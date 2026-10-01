@@ -90,7 +90,109 @@ async function initSqliteDb() {
     });
   });
 
+  await ensureSqliteSchema(db);
   console.log('SQLite database initialized.');
+}
+
+/**
+ * Bring any SQLite database up to the ClearPath v2 schema.
+ *
+ * The fallback used to create only the original four tables, so a machine without
+ * Postgres could not run the verification / dispatch / approval workflow (every
+ * admin query referenced columns and tables that did not exist). Every statement
+ * here is idempotent, so it is safe on both fresh and pre-existing files.
+ */
+async function ensureSqliteSchema(db) {
+  const run = (sql) => new Promise((resolve, reject) => {
+    db.run(sql, (err) => (err ? reject(err) : resolve()));
+  });
+  const migrate = (sql) => run(sql).catch(() => {});
+  const get = (sql) => new Promise((resolve, reject) => {
+    db.get(sql, (err, row) => (err ? reject(err) : resolve(row || null)));
+  });
+
+  // Driver identity + approval + live location columns.
+  await migrate('ALTER TABLE users ADD COLUMN vehicle_type TEXT');
+  await migrate('ALTER TABLE users ADD COLUMN organization TEXT');
+  await migrate("ALTER TABLE users ADD COLUMN approval_status TEXT DEFAULT 'pending'");
+  await migrate("ALTER TABLE users ADD COLUMN availability TEXT DEFAULT 'OFFLINE'");
+  await migrate('ALTER TABLE users ADD COLUMN current_latitude REAL');
+  await migrate('ALTER TABLE users ADD COLUMN current_longitude REAL');
+  await migrate('ALTER TABLE users ADD COLUMN last_location_update TIMESTAMP');
+
+  // Incident lifecycle (ACTIVE -> ... -> RESOLVED) and driver reference.
+  await migrate("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'PENDING_AI'");
+  await migrate('ALTER TABLE road_reports ADD COLUMN driver_id TEXT');
+
+  // Live emergency response columns on trips.
+  await migrate('ALTER TABLE emergency_trips ADD COLUMN dispatch_id TEXT');
+  await migrate("ALTER TABLE emergency_trips ADD COLUMN status TEXT DEFAULT 'completed'");
+
+  // Tables the fallback never created.
+  await migrate(`CREATE TABLE IF NOT EXISTS ai_analyses (
+    id TEXT PRIMARY KEY,
+    report_id TEXT,
+    detected_type TEXT,
+    severity TEXT,
+    confidence REAL,
+    people_injured INTEGER,
+    road_blocked INTEGER,
+    emergency_recommended INTEGER,
+    raw_reasoning TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  await migrate(`CREATE TABLE IF NOT EXISTS dispatches (
+    id TEXT PRIMARY KEY,
+    report_id TEXT,
+    required_vehicle TEXT CHECK(required_vehicle IN ('ambulance', 'fire')),
+    status TEXT DEFAULT 'available' CHECK(status IN ('available', 'accepted', 'completed', 'cancelled')),
+    driver_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  await migrate(`CREATE TABLE IF NOT EXISTS driver_approval_requests (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    driver_id TEXT,
+    vehicle_no TEXT,
+    vehicle_type TEXT,
+    organization TEXT,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMP,
+    rejection_reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // Older files baked in CHECK(status IN ('pending','verified','resolved')), which
+  // rejects the REJECTED lifecycle. SQLite cannot drop a CHECK, so rebuild the table.
+  const roadReports = await get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'road_reports'");
+  if (roadReports && roadReports.sql && !roadReports.sql.includes('rejected')) {
+    await run('ALTER TABLE road_reports RENAME TO road_reports_legacy');
+    await run(`CREATE TABLE road_reports (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      type TEXT,
+      description TEXT,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'verified', 'resolved', 'rejected')),
+      latitude REAL,
+      longitude REAL,
+      address TEXT,
+      photo_url TEXT,
+      points INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      lifecycle_state TEXT DEFAULT 'PENDING_AI',
+      driver_id TEXT
+    )`);
+    await run(`INSERT INTO road_reports
+      (id, user_id, type, description, status, latitude, longitude, address, photo_url, points, created_at, lifecycle_state)
+      SELECT id, user_id, type, description, status, latitude, longitude, address, photo_url, points, created_at, 'ACTIVE'
+      FROM road_reports_legacy`);
+    await run('DROP TABLE road_reports_legacy');
+    console.log('SQLite: road_reports rebuilt to allow the REJECTED lifecycle.');
+  }
 }
 
 async function initDb() {
@@ -277,4 +379,34 @@ const dbAll = async (sql, params = []) => {
   return res.rows;
 };
 
-module.exports = { db: useSqlite ? sqliteDb : pool, dbRun, dbGet, dbAll, initPromise };
+/**
+ * Delete every operational row so the system can be demoed from a clean slate.
+ *
+ * Admin credentials are environment-based, so wiping `users` does not lock anyone
+ * out of the dashboard. Order below is child-before-parent for SQLite, which does
+ * not support TRUNCATE ... CASCADE.
+ */
+const RESET_TABLES = [
+  'ai_analyses',
+  'dispatches',
+  'emergency_trips',
+  'reward_events',
+  'driver_approval_requests',
+  'road_reports',
+  'users'
+];
+
+async function resetAllData() {
+  if (useSqlite) {
+    for (const table of RESET_TABLES) {
+      // A table missing from an older file is not a failure worth stopping for.
+      await dbRun('DELETE FROM ' + table).catch(() => {});
+    }
+    return { engine: 'sqlite', tables: RESET_TABLES };
+  }
+
+  await pool.query('TRUNCATE TABLE ' + RESET_TABLES.join(', ') + ' RESTART IDENTITY CASCADE');
+  return { engine: 'postgres', tables: RESET_TABLES };
+}
+
+module.exports = { db: useSqlite ? sqliteDb : pool, dbRun, dbGet, dbAll, initPromise, resetAllData };
