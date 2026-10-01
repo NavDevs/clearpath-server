@@ -503,7 +503,8 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
     }
     await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'verified' WHERE id = ?", [req.params.id]);
     fullDispatch = await dbGet(`
-      SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
+      SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url,
+             r.created_at AS reported_at
       FROM dispatches d
       JOIN road_reports r ON d.report_id = r.id
       WHERE d.id = ?`, [dispatchId]
@@ -583,12 +584,43 @@ app.get('/api/admin/stats', authMiddleware, requireRole('admin'), async (req, re
 });
 app.get('/api/reports', async (req, res) => {
   const reports = await dbAll('SELECT * FROM road_reports ORDER BY created_at DESC');
-  res.json(reports);
+  res.json(reports.map(withExpiry));
 });
 
 // Loaded regardless of the AI_VERIFICATION switch: with the switch off it is simply
 // never called, and the module is harmless to require.
-const { analyzeIncident } = require('./ai_service');
+const { analyzeIncident, createDispatch, isCriticalEmergency, resolveEmergencyVehicle } = require('./ai_service');
+
+// Issue-type resolution durations (hours). Preserves the configured values
+// shown on the dashboard: accident 2h, fire 1h, congestion 3h, blocked 4h,
+// flooding 6h, pothole 48h. Everything else defaults to 4h.
+const DURATION_HOURS = {
+  accident: 2, fire: 1, congestion: 3, blocked: 4,
+  flooding: 6, pothole: 48, roadwork: 4, other: 4, default: 4,
+};
+
+function durationHoursFor(type) {
+  return DURATION_HOURS[String(type || '').toLowerCase()] || DURATION_HOURS.default;
+}
+
+function toMs(createdAt) {
+  return new Date(createdAt).getTime();
+}
+
+// Backend-computed expiry for countdowns: resolutionTime = reportedTime + duration.
+// The frontend displays remaining time from these fields, never its own clock math.
+function withExpiry(row) {
+  // For dispatches, expiry counts from the incident's reported time.
+  const base = row.reported_at || row.created_at;
+  if (!row || !base) return row;
+  const ttlMs = durationHoursFor(row.type) * 3600000;
+  const expiresAtMs = toMs(base) + ttlMs;
+  return {
+    ...row,
+    expires_at: new Date(expiresAtMs).toISOString(),
+    remaining_seconds: Math.max(0, Math.round((expiresAtMs - Date.now()) / 1000)),
+  };
+}
 
 app.post('/api/reports', upload.single('photo'), async (req, res) => {
   try {
@@ -649,15 +681,25 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     // The reporter's own app already inserts the returned report locally.
     io.emit('report_updated', newReport);
 
-    // Manual mode (AI_VERIFICATION off): the incident stays ACTIVE and waits for an
-    // admin to verify or reject it from the dashboard. Automated mode: ACTIVE ->
-    // PENDING_VERIFICATION -> VERIFIED / HUMAN_REVIEW / REJECTED.
+  // Critical emergencies NEVER wait for a human: with AI on they go through
+  // AI analysis first, with AI off (or on AI failure) they dispatch straight
+  // from the citizen's explicit accident/fire category. Normal issues stay
+  // ACTIVE for manual admin verification when AI is off.
+  const broadcast = (event, data) => io.emit(event, data);
+  if (isCriticalEmergency(normType)) {
     if (AI_VERIFICATION_ENABLED) {
-      analyzeIncident(newReport, (event, data) => io.emit(event, data))
+      analyzeIncident(newReport, broadcast)
         .catch(err => console.error("AI Pipeline failed:", err));
     } else {
-      console.log(`[ClearPath] Incident ${id} is ACTIVE and waiting for manual admin verification.`);
+      createDispatch(newReport, resolveEmergencyVehicle(normType, null), broadcast)
+        .catch(err => console.error("Immediate dispatch failed:", err));
     }
+  } else if (AI_VERIFICATION_ENABLED) {
+    analyzeIncident(newReport, broadcast)
+      .catch(err => console.error("AI Pipeline failed:", err));
+  } else {
+    console.log(`[ClearPath] Incident ${id} is ACTIVE and waiting for manual admin verification.`);
+  }
 
     io.emit('points_updated', { user_id, points: pts });
     notifyAdmin();
@@ -688,7 +730,7 @@ app.post('/api/dispatches/:id/accept', async (req, res) => {
   const dispatch = await dbGet('SELECT * FROM dispatches WHERE id = ?', [dispatchId]);
   if (!dispatch) return res.status(404).json({ error: 'Dispatch not found' });
   if (dispatch.status !== 'available') {
-    return res.status(409).json({ error: 'Dispatch already accepted by another driver' });
+    return res.status(409).json({ error: 'REQUEST ALREADY TAKEN' });
   }
 
   // Backend authorization: driver must exist, be approved, and be available.
@@ -714,7 +756,7 @@ app.post('/api/dispatches/:id/accept', async (req, res) => {
 
   const verify = await dbGet("SELECT status, driver_id FROM dispatches WHERE id = ?", [dispatchId]);
   if (verify.driver_id !== driver.id) {
-    return res.status(409).json({ error: 'Dispatch already accepted by another driver' });
+    return res.status(409).json({ error: 'REQUEST ALREADY TAKEN' });
   }
 
   // Driver becomes BUSY; incident moves DISPATCHED -> ACCEPTED.
@@ -944,7 +986,8 @@ app.get('/api/dispatches', async (req, res) => {
     params.push(vehicle_type);
   }
   const dispatches = await dbAll(`
-    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url, r.lifecycle_state
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url,
+           r.lifecycle_state, r.created_at AS reported_at
     FROM dispatches d
     JOIN road_reports r ON d.report_id = r.id
     WHERE d.status = 'available'
@@ -952,8 +995,39 @@ app.get('/api/dispatches', async (req, res) => {
       ${vehicleFilter}
     ORDER BY d.created_at DESC
   `, params);
-  res.json(dispatches);
+  res.json(await enrichDispatches(dispatches));
 });
+
+// Attach reported time, emergency priority, AI result and expiry countdown to
+// each emergency request so the driver sees the full incident evidence.
+async function enrichDispatches(rows) {
+  const ids = rows.map((d) => d.report_id).filter(Boolean);
+  const analyses = {};
+  if (ids.length) {
+    const placeholders = ids.map(() => '?').join(',');
+    const found = await dbAll(
+      `SELECT report_id, detected_type, severity, confidence,
+              emergency_recommended, raw_reasoning, created_at
+       FROM ai_analyses WHERE report_id IN (${placeholders}) ORDER BY created_at DESC`,
+      ids
+    );
+    for (const a of found) {
+      if (!analyses[a.report_id]) analyses[a.report_id] = a;
+    }
+  }
+  return rows.map((d) => {
+    const a = analyses[d.report_id] || {};
+    return withExpiry({
+      ...d,
+      priority: a.severity || 'HIGH',
+      ai_detected_type: a.detected_type || null,
+      ai_confidence: a.confidence ?? null,
+      ai_severity: a.severity || null,
+      ai_emergency_recommended: a.emergency_recommended ?? null,
+      ai_reasoning: a.raw_reasoning || null,
+    });
+  });
+}
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -976,7 +1050,8 @@ app.get('/api/dispatches/nearby', async (req, res) => {
     params.push(vehicle_type);
   }
   const all = await dbAll(`
-    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url, r.lifecycle_state
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url,
+           r.lifecycle_state, r.created_at AS reported_at
     FROM dispatches d
     JOIN road_reports r ON d.report_id = r.id
     WHERE d.status = 'available'
@@ -984,7 +1059,8 @@ app.get('/api/dispatches/nearby', async (req, res) => {
       ${vehicleFilter}
     ORDER BY d.created_at DESC
   `, params);
-  const filtered = all
+  const enriched = await enrichDispatches(all);
+  const filtered = enriched
     .filter((d) => !vehicle_type || d.required_vehicle === vehicle_type)
     .map((d) => {
       let distanceKm = null;
@@ -1060,50 +1136,68 @@ app.get('/api/trips/active/:driver_id', async (req, res) => {
 
 
 // â”€â”€ CLEARPATH AUTO-EXPIRY ENGINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Reports auto-expire after a type-specific TTL. Runs every 10 minutes.
-const REPORT_TTL_HOURS = {
-  accident: 2, congestion: 3, blocked: 4, flooding: 6, pothole: 48, default: 4
-};
-
-function toMs(createdAt) {
-  const d = new Date(createdAt);
-  return d.getTime();
-}
+// resolutionTime = reportedTime + configuredDuration (per issue type).
+// Runs every 2 minutes so issues vanish on time even if every app is closed.
+// An issue stays visible until its duration expires; the backend — never the
+// frontend — marks it RESOLVED. Incidents a driver is actively handling
+// (ACCEPTED / EN_ROUTE / ARRIVED) are never pulled out from under them.
+const HANDLED_STATES = ['ACCEPTED', 'EN_ROUTE', 'ARRIVED'];
 
 async function runExpiryEngine() {
-  // Step 1: Move old ACTIVE reports to RECHECK
-  const activeReports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE lifecycle_state = 'ACTIVE' OR lifecycle_state = 'VERIFIED'");
+  const open = await dbAll(
+    "SELECT id, type, lifecycle_state, created_at FROM road_reports WHERE lifecycle_state NOT IN ('RESOLVED', 'REJECTED')"
+  );
   const now = Date.now();
-  const RECHECK_TTL_HOURS = { accident: 2, fire: 1, congestion: 3, blocked: 4, flooding: 6, pothole: 48, default: 4 };
-  
-  for (const r of activeReports) {
-    const ttl = RECHECK_TTL_HOURS[r.type] || RECHECK_TTL_HOURS.default;
+  for (const r of open) {
     const ageHrs = (now - toMs(r.created_at)) / 3600000;
-    if (ageHrs >= ttl) {
-      await dbRun("UPDATE road_reports SET lifecycle_state = 'RECHECK', status = 'pending' WHERE id = ?", [r.id]);
-      console.log(`[ClearPath] Recheck flagged: ${r.type} (${ageHrs.toFixed(1)}h old)`);
-    }
-  }
+    if (ageHrs < durationHoursFor(r.type)) continue;
+    if (HANDLED_STATES.includes(r.lifecycle_state)) continue;
 
-  // Step 2: Auto-resolve old RECHECK reports (after 30 more min)
-  const recheckReports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE lifecycle_state = 'RECHECK'");
-  for (const r of recheckReports) {
-    const ageHrs = (now - toMs(r.created_at)) / 3600000;
-    const ttl = (RECHECK_TTL_HOURS[r.type] || RECHECK_TTL_HOURS.default) + 0.5;
-    if (ageHrs >= ttl) {
-      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
-      const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
-      io.emit('report_updated', updated);
-      console.log(`[ClearPath] Auto-resolved: ${r.type}`);
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
+
+    // A still-unclaimed emergency request dies with its incident so drivers
+    // stop seeing it; claimed ones already moved past 'available'.
+    const stale = await dbAll("SELECT id FROM dispatches WHERE report_id = ? AND status = 'available'", [r.id]);
+    for (const d of stale) {
+      await dbRun("UPDATE dispatches SET status = 'cancelled' WHERE id = ?", [d.id]);
+      io.emit('dispatch.cancelled', { dispatchId: d.id, report_id: r.id, reason: 'expired' });
+    }
+
+    const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
+    io.emit('report_updated', withExpiry(updated));
+    console.log(`[ClearPath] Auto-resolved: ${r.type} (${ageHrs.toFixed(1)}h old, was ${r.lifecycle_state})`);
+  }
+}
+
+// Safety net: a critical accident/fire must never sit undispatched because an
+// AI call failed, the server restarted mid-analysis, or verification is off.
+// Anything still ACTIVE/PENDING/HUMAN_REVIEW after 90s gets its dispatch now.
+async function runDispatchSweeper() {
+  const stale = await dbAll(
+    `SELECT r.* FROM road_reports r
+     LEFT JOIN dispatches d ON d.report_id = r.id
+     WHERE r.type IN ('accident', 'fire')
+       AND r.lifecycle_state IN ('ACTIVE', 'PENDING_VERIFICATION', 'HUMAN_REVIEW')
+       AND d.id IS NULL`
+  );
+  const now = Date.now();
+  const broadcast = (event, data) => io.emit(event, data);
+  for (const r of stale) {
+    if ((now - toMs(r.created_at)) / 1000 < 90) continue;
+    console.log(`[ClearPath] Sweeper dispatching stale ${r.type} ${r.id}`);
+    try {
+      await createDispatch(r, resolveEmergencyVehicle(r.type, null), broadcast);
+    } catch (err) {
+      console.error('[ClearPath] Sweeper dispatch failed:', err.message || err);
     }
   }
 }
 
-// The expiry sweep must never take the server down: a schema hiccup here would
-// otherwise become an unhandled rejection and kill the process on boot.
-const runExpiryEngineSafely = () =>
-  runExpiryEngine().catch((err) => console.error('[ClearPath] Expiry engine failed:', err.message || err));
-initPromise.then(() => { runExpiryEngineSafely(); setInterval(runExpiryEngineSafely, 10 * 60 * 1000); });
+// The sweeps must never take the server down.
+const runSweepsSafely = () =>
+  Promise.all([runExpiryEngine(), runDispatchSweeper()])
+    .catch((err) => console.error('[ClearPath] Sweep failed:', err.message || err));
+initPromise.then(() => { runSweepsSafely(); setInterval(runSweepsSafely, 2 * 60 * 1000); });
 
 // â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
 app.get('/health', (req, res) => {

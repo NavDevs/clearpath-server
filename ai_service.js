@@ -112,6 +112,23 @@ async function analyzeIncident(report, broadcastCallback) {
   } catch (error) {
     console.error(`[AI Engine] Failed to analyze report ${report.id}:`, error);
 
+    // Critical emergencies NEVER wait: AI outage still dispatches from the
+    // citizen's explicit accident/fire category. Normal issues go to review.
+    if (isCriticalEmergency(report.type)) {
+      console.log(`[AI Engine] AI unavailable — immediate ${report.type} dispatch from user category.`);
+      await runDecisionEngine(report, {
+        detectedType: normalizeUserType(report.type) === 'fire' ? 'FIRE' : 'ACCIDENT',
+        severity: 'HIGH',
+        confidence: 0.9,
+        verdict: 'likely genuine',
+        peoplePossiblyInjured: normalizeUserType(report.type) === 'accident',
+        roadBlocked: true,
+        emergencyResponseRecommended: true,
+        reason: 'AI unavailable — dispatching from citizen emergency category.'
+      }, broadcastCallback);
+      return;
+    }
+
     // Spec: do NOT pretend unverified incidents are genuine when AI is unavailable.
     // Route to human review so an admin can verify or reject.
     await dbRun("UPDATE road_reports SET lifecycle_state = 'HUMAN_REVIEW', status = 'pending' WHERE id = ?", [report.id]);
@@ -120,18 +137,40 @@ async function analyzeIncident(report, broadcastCallback) {
 }
 
 /**
+ * Critical emergencies (accident / fire) bypass human review entirely:
+ * REPORT -> AI ANALYSIS -> IMMEDIATE SIGNAL AID DISPATCH.
+ */
+function isCriticalEmergency(type) {
+  const t = normalizeUserType(type);
+  return t === 'accident' || t === 'fire';
+}
+
+/**
  * Spec decision engine:
- * PENDING_VERIFICATION -> VERIFIED (broadcast) | HUMAN_REVIEW | REJECTED
- * Only VERIFIED accident/fire create Signal-Aid dispatches.
- * AI must not invent evidence: low/unclear evidence goes to human review.
+ * - CRITICAL (accident/fire): REPORT -> AI ANALYSIS -> IMMEDIATE DISPATCH.
+ *   Never waits for human approval. AI output only enriches priority.
+ * - NORMAL issues: PENDING_VERIFICATION -> VERIFIED | HUMAN_REVIEW | REJECTED.
+ *   Never create Signal-Aid dispatches.
  */
 async function runDecisionEngine(report, aiResult, broadcastCallback) {
   console.log(`[Decision Engine] Evaluating report ${report.id}...`);
 
   const confidence = Number(aiResult.confidence ?? 0);
   const verdict = String(aiResult.verdict || 'insufficient evidence').toLowerCase();
-  const userType = normalizeUserType(report.type);
 
+  // ── Critical emergencies: dispatch immediately, no human gate. ──
+  if (isCriticalEmergency(report.type)) {
+    const requiredVehicle = resolveEmergencyVehicle(report.type, aiResult.detectedType);
+    console.log(`[Decision Engine] Critical ${report.type} (confidence ${confidence}) -> immediate ${requiredVehicle} dispatch.`);
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'VERIFIED', status = 'verified' WHERE id = ?", [report.id]);
+    const verifiedReport = { ...report, lifecycle_state: 'VERIFIED', status: 'verified' };
+    broadcastCallback('report_updated', verifiedReport);
+    broadcastCallback('new_incident', verifiedReport);
+    await createDispatch(report, requiredVehicle, broadcastCallback);
+    return;
+  }
+
+  // ── Normal road issues: confidence-gated, never dispatched. ──
   // Clearly invalid evidence -> REJECTED (do not broadcast as emergency).
   if (verdict.includes('invalid') || confidence < 0.40) {
     console.log(`[Decision Engine] Rejecting ${report.id}: verdict=${verdict}, confidence=${confidence}`);
@@ -148,43 +187,71 @@ async function runDecisionEngine(report, aiResult, broadcastCallback) {
     return;
   }
 
-  // Genuine emergency with sufficient confidence -> VERIFIED (broadcast verified alert).
-  console.log(`[Decision Engine] Verified ${report.id}: type=${userType}, detected=${aiResult.detectedType}, confidence=${confidence}`);
+  // Genuine non-critical issue -> VERIFIED (visible on Roadly, no dispatch).
+  console.log(`[Decision Engine] Verified ${report.id}: type=${report.type}, detected=${aiResult.detectedType}, confidence=${confidence}`);
   await dbRun("UPDATE road_reports SET lifecycle_state = 'VERIFIED', status = 'verified' WHERE id = ?", [report.id]);
   const verifiedReport = { ...report, lifecycle_state: 'VERIFIED', status: 'verified' };
   broadcastCallback('report_updated', verifiedReport);
   broadcastCallback('new_incident', verifiedReport);
-
-  const requiredVehicle = resolveEmergencyVehicle(report.type, aiResult.detectedType);
-
-  if (requiredVehicle) {
-    console.log(`[Decision Engine] Verified Emergency! Creating ${requiredVehicle} dispatch.`);
-
-    const existing = await dbGet('SELECT id FROM dispatches WHERE report_id = ?', [report.id]);
-    let dispatchId = existing?.id;
-
-    if (!dispatchId) {
-      dispatchId = uuidv4();
-      await dbRun(
-        `INSERT INTO dispatches (id, report_id, required_vehicle, status) VALUES (?, ?, ?, 'available')`,
-        [dispatchId, report.id, requiredVehicle]
-      );
-    }
-
-    // Spec flow: VERIFIED -> DISPATCHED once the emergency request exists.
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'verified' WHERE id = ?", [report.id]);
-
-    const fullDispatch = await dbGet(`
-      SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
-      FROM dispatches d
-      JOIN road_reports r ON d.report_id = r.id
-      WHERE d.id = ?`, [dispatchId]
-    );
-
-    const dispatchedReport = { ...report, lifecycle_state: 'DISPATCHED', status: 'verified' };
-    broadcastCallback('report_updated', dispatchedReport);
-    broadcastCallback('dispatch.created', fullDispatch);
-  }
 }
 
-module.exports = { analyzeIncident };
+/**
+ * Creates the Signal-Aid emergency request for a verified critical incident
+ * and moves it VERIFIED -> DISPATCHED. Carries the full incident evidence:
+ * id, type, description, image, exact GPS, reported time and AI priority.
+ */
+async function createDispatch(report, requiredVehicle, broadcastCallback) {
+  if (!requiredVehicle) return null;
+  console.log(`[Decision Engine] Creating ${requiredVehicle} dispatch for ${report.id}.`);
+
+  const existing = await dbGet('SELECT id FROM dispatches WHERE report_id = ?', [report.id]);
+  let dispatchId = existing?.id;
+
+  if (!dispatchId) {
+    dispatchId = uuidv4();
+    await dbRun(
+      `INSERT INTO dispatches (id, report_id, required_vehicle, status) VALUES (?, ?, ?, 'available')`,
+      [dispatchId, report.id, requiredVehicle]
+    );
+  }
+
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'verified' WHERE id = ?", [report.id]);
+
+  const fullDispatch = await getDispatchPayload(dispatchId);
+
+  const dispatchedReport = { ...report, lifecycle_state: 'DISPATCHED', status: 'verified' };
+  broadcastCallback('report_updated', dispatchedReport);
+  broadcastCallback('dispatch.created', fullDispatch);
+  return fullDispatch;
+}
+
+/**
+ * Full emergency request payload for Signal-Aid: incident id/type/description,
+ * image, exact GPS, reported time, emergency priority and AI analysis result.
+ */
+async function getDispatchPayload(dispatchId) {
+  const fullDispatch = await dbGet(`
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address,
+           r.photo_url, r.created_at AS reported_at, r.points
+    FROM dispatches d
+    JOIN road_reports r ON d.report_id = r.id
+    WHERE d.id = ?`, [dispatchId]
+  );
+  if (!fullDispatch) return null;
+  const analysis = await dbGet(
+    `SELECT detected_type, severity, confidence, emergency_recommended, raw_reasoning
+     FROM ai_analyses WHERE report_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [fullDispatch.report_id]
+  );
+  return {
+    ...fullDispatch,
+    priority: analysis?.severity || 'HIGH',
+    ai_detected_type: analysis?.detected_type || null,
+    ai_confidence: analysis?.confidence ?? null,
+    ai_severity: analysis?.severity || null,
+    ai_emergency_recommended: analysis?.emergency_recommended ?? null,
+    ai_reasoning: analysis?.raw_reasoning || null,
+  };
+}
+
+module.exports = { analyzeIncident, createDispatch, getDispatchPayload, isCriticalEmergency, resolveEmergencyVehicle };
