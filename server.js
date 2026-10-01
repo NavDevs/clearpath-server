@@ -591,67 +591,83 @@ app.get('/api/reports', async (req, res) => {
 const { analyzeIncident } = require('./ai_service');
 
 app.post('/api/reports', upload.single('photo'), async (req, res) => {
-  const { user_id, type, description, latitude, longitude, address, points } = req.body;
-  const id = uuidv4();
-  let photo_url = null;
-
-  if (req.file && supabase) {
-    const fileName = `${id}-${Date.now()}${path.extname(req.file.originalname)}`;
-    const { error } = await supabase.storage
-      .from(BUCKET)
-      .upload(fileName, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
-    
-    if (!error) {
-      const { data } = supabase.storage.from(BUCKET).getPublicUrl(fileName);
-      photo_url = data.publicUrl;
-    } else {
-      console.error('Supabase upload error:', error);
+  try {
+    const { user_id, type, description, latitude, longitude, address, points } = req.body;
+    if (!user_id) {
+      return res.status(400).json({ error: 'Login required. Please log in again before submitting a report.', code: 'NO_USER' });
     }
-  } else if (req.file) {
-    console.warn('Photo upload skipped: Supabase storage is not configured.');
+    // Session may be stale (e.g. database was reset): fail fast with a clear
+    // message instead of a foreign-key 500.
+    const reporter = await dbGet('SELECT id FROM users WHERE id = ?', [user_id]);
+    if (!reporter) {
+      return res.status(401).json({ error: 'Session expired. Please log out and log in again.', code: 'STALE_SESSION' });
+    }
+
+    const id = uuidv4();
+    let photo_url = null;
+
+    if (req.file && supabase) {
+      const fileName = `${id}-${Date.now()}${path.extname(req.file.originalname)}`;
+      const { error } = await supabase.storage
+        .from(BUCKET)
+        .upload(fileName, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
+
+      if (!error) {
+        const { data } = supabase.storage.from(BUCKET).getPublicUrl(fileName);
+        photo_url = data.publicUrl;
+      } else {
+        console.error('Supabase upload error:', error);
+      }
+    } else if (req.file) {
+      console.warn('Photo upload skipped: Supabase storage is not configured.');
+    }
+
+    // Spec: initial incident status must be ACTIVE.
+    // Normalize incident type: accident | fire | other (+ legacy map types).
+    const rawType = String(type || 'other').trim().toLowerCase();
+    const typeMap = {
+      accident: 'accident', fire: 'fire', other: 'other', emergency: 'other',
+      other_emergency: 'other', blocked: 'blocked', congestion: 'congestion',
+      pothole: 'pothole', flooding: 'flooding', roadwork: 'roadwork', road_work: 'roadwork',
+    };
+    const normType = typeMap[rawType] || 'other';
+    const pts = Number(points) || 0;
+    await dbRun(`INSERT INTO road_reports
+      (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
+      [id, user_id, normType, description, latitude, longitude, address, photo_url, pts]
+    );
+
+    const newReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [id]);
+
+    await dbRun('INSERT INTO reward_events (id, user_id, report_id, points, reason) VALUES (?, ?, ?, ?, ?)',
+      [uuidv4(), user_id, id, pts, 'report_submission']
+    );
+    await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [pts, user_id]);
+
+    // Spec: do NOT broadcast unverified incidents as confirmed emergencies.
+    // The reporter's own app already inserts the returned report locally.
+    io.emit('report_updated', newReport);
+
+    // Manual mode (AI_VERIFICATION off): the incident stays ACTIVE and waits for an
+    // admin to verify or reject it from the dashboard. Automated mode: ACTIVE ->
+    // PENDING_VERIFICATION -> VERIFIED / HUMAN_REVIEW / REJECTED.
+    if (AI_VERIFICATION_ENABLED) {
+      analyzeIncident(newReport, (event, data) => io.emit(event, data))
+        .catch(err => console.error("AI Pipeline failed:", err));
+    } else {
+      console.log(`[ClearPath] Incident ${id} is ACTIVE and waiting for manual admin verification.`);
+    }
+
+    io.emit('points_updated', { user_id, points: pts });
+    notifyAdmin();
+
+    // Return the ACTIVE report immediately to the citizen's app
+    res.json(newReport);
+  } catch (err) {
+    console.error('POST /api/reports failed:', err);
+    res.status(400).json({ error: 'Could not submit report. Please try again.' });
   }
-
-  // Spec: initial incident status must be ACTIVE.
-  // Normalize incident type: accident | fire | other (+ legacy map types).
-  const rawType = String(type || 'other').trim().toLowerCase();
-  const typeMap = {
-    accident: 'accident', fire: 'fire', other: 'other', emergency: 'other',
-    other_emergency: 'other', blocked: 'blocked', congestion: 'congestion',
-    pothole: 'pothole', flooding: 'flooding', roadwork: 'roadwork', road_work: 'roadwork',
-  };
-  const normType = typeMap[rawType] || 'other';
-  await dbRun(`INSERT INTO road_reports
-    (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
-    [id, user_id, normType, description, latitude, longitude, address, photo_url, points]
-  );
-
-  const newReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [id]);
-
-  await dbRun('INSERT INTO reward_events (id, user_id, report_id, points, reason) VALUES (?, ?, ?, ?, ?)',
-    [uuidv4(), user_id, id, points || 0, 'report_submission']
-  );
-  await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [points || 0, user_id]);
-
-  // Spec: do NOT broadcast unverified incidents as confirmed emergencies.
-  // The reporter's own app already inserts the returned report locally.
-  io.emit('report_updated', newReport);
-
-  // Manual mode (AI_VERIFICATION off): the incident stays ACTIVE and waits for an
-  // admin to verify or reject it from the dashboard. Automated mode: ACTIVE ->
-  // PENDING_VERIFICATION -> VERIFIED / HUMAN_REVIEW / REJECTED.
-  if (AI_VERIFICATION_ENABLED) {
-    analyzeIncident(newReport, (event, data) => io.emit(event, data))
-      .catch(err => console.error("AI Pipeline failed:", err));
-  } else {
-    console.log(`[ClearPath] Incident ${id} is ACTIVE and waiting for manual admin verification.`);
-  }
-
-  io.emit('points_updated', { user_id, points });
-  notifyAdmin();
-
-  // Return the ACTIVE report immediately to the citizen's app
-  res.json(newReport);
 });
 
 // Admin endpoint to verify/resolve reports
@@ -849,13 +865,29 @@ app.patch('/api/trips/:id/status', async (req, res) => {
   await dbRun("UPDATE emergency_trips SET status = ? WHERE id = ?", [status, req.params.id]);
   const updatedTrip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
 
+  // Proximity evidence for ARRIVED: where both positions are known, record how
+  // far the driver was from the incident. Warn-only (demo-safe): arrival is
+  // still accepted when GPS is unavailable or the driver is far away.
+  let proximityKm = null;
+  if (status === 'arrived' && updatedTrip.report_id && updatedTrip.driver_id) {
+    const drv = await dbGet('SELECT current_latitude, current_longitude FROM users WHERE id = ?', [updatedTrip.driver_id]);
+    const inc = await dbGet('SELECT latitude, longitude FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
+    if (drv && inc && drv.current_latitude != null && drv.current_longitude != null &&
+        inc.latitude != null && inc.longitude != null) {
+      proximityKm = Number(haversineKm(
+        Number(drv.current_latitude), Number(drv.current_longitude),
+        Number(inc.latitude), Number(inc.longitude)
+      ).toFixed(2));
+    }
+  }
+
   if (status === 'arrived') {
     if (updatedTrip.report_id) {
       await dbRun("UPDATE road_reports SET lifecycle_state = 'ARRIVED', status = 'verified' WHERE id = ?", [updatedTrip.report_id]);
       const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
       if (incident) io.emit('report_updated', incident);
     }
-    io.emit('trip.arrived', updatedTrip);
+    io.emit('trip.arrived', { ...updatedTrip, proximityKm, farFromScene: proximityKm != null && proximityKm > 2 });
   } else if (status === 'completed') {
     if (updatedTrip.dispatch_id) {
       await dbRun("UPDATE dispatches SET status = 'completed' WHERE id = ?", [updatedTrip.dispatch_id]);
@@ -874,7 +906,7 @@ app.patch('/api/trips/:id/status', async (req, res) => {
   }
 
   notifyAdmin();
-  res.json(updatedTrip);
+  res.json({ ...updatedTrip, proximityKm });
 });
 
 // LEADERBOARD / USERS
@@ -900,14 +932,26 @@ app.patch('/api/users/:id/availability', authMiddleware, requireRole('admin'), a
 });
 
 // GET available dispatches (Signal-Aid loads on app start)
+// Only VERIFIED/DISPATCHED incidents are dispatchable. Unverified incidents
+// never appear here. vehicle_type is enforced here too (backend), never
+// trusting the app alone: ambulance sees accident jobs, fire sees fire jobs.
 app.get('/api/dispatches', async (req, res) => {
+  const { vehicle_type } = req.query;
+  const params = [];
+  let vehicleFilter = '';
+  if (vehicle_type === 'ambulance' || vehicle_type === 'fire') {
+    vehicleFilter = 'AND d.required_vehicle = ?';
+    params.push(vehicle_type);
+  }
   const dispatches = await dbAll(`
-    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url, r.lifecycle_state
     FROM dispatches d
     JOIN road_reports r ON d.report_id = r.id
     WHERE d.status = 'available'
+      AND r.lifecycle_state IN ('VERIFIED', 'DISPATCHED')
+      ${vehicleFilter}
     ORDER BY d.created_at DESC
-  `);
+  `, params);
   res.json(dispatches);
 });
 
@@ -920,16 +964,26 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 }
 
 // GET nearby available dispatches for an approved driver.
+// Same guarantees as /api/dispatches: verified incidents only, backend
+// vehicle-type enforcement, then radius filtering around the driver.
 app.get('/api/dispatches/nearby', async (req, res) => {
   const { lat, lon, vehicle_type, radiusKm } = req.query;
   const radius = Number(radiusKm) || 25;
+  const params = [];
+  let vehicleFilter = '';
+  if (vehicle_type === 'ambulance' || vehicle_type === 'fire') {
+    vehicleFilter = 'AND d.required_vehicle = ?';
+    params.push(vehicle_type);
+  }
   const all = await dbAll(`
-    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url, r.lifecycle_state
     FROM dispatches d
     JOIN road_reports r ON d.report_id = r.id
     WHERE d.status = 'available'
+      AND r.lifecycle_state IN ('VERIFIED', 'DISPATCHED')
+      ${vehicleFilter}
     ORDER BY d.created_at DESC
-  `);
+  `, params);
   const filtered = all
     .filter((d) => !vehicle_type || d.required_vehicle === vehicle_type)
     .map((d) => {
