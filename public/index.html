@@ -419,6 +419,76 @@
         .fade-in { animation: fadeIn 0.45s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
+        /* ── MOTION SYSTEM: page entrances, rows, buttons, live badges ── */
+        @keyframes riseIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes rowIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes toastPop { from { opacity: 0; transform: translateY(12px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+        /* staggered page entrance */
+        .sidebar { animation: riseIn 0.45s ease-out backwards; }
+        .main > .header { animation: riseIn 0.5s ease-out backwards; }
+        .main > .signal-banner { animation: riseIn 0.5s 0.08s ease-out backwards; }
+        .main > .stats-grid { animation: riseIn 0.5s 0.14s ease-out backwards; }
+        .main > .section, .main > .two-col { animation: riseIn 0.5s 0.2s ease-out backwards; }
+        .login-panel { animation: modalIn 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.15) backwards; }
+
+        /* every button: press-down feedback + primary shine sweep */
+        .logout-btn, .btn-refresh, .btn-ghost, .btn-primary, .btn-danger, .reset-btn { position: relative; overflow: hidden; }
+        .logout-btn:active, .btn-refresh:active, .btn-ghost:active,
+        .btn-primary:active, .btn-danger:active, .reset-btn:active { transform: scale(0.95); }
+        .btn-refresh::after, .btn-primary::after {
+            content: ''; position: absolute; top: 0; left: -70%; width: 45%; height: 100%;
+            background: linear-gradient(100deg, transparent, rgba(255,255,255,0.35), transparent);
+            transform: skewX(-20deg); transition: left 0.55s ease;
+        }
+        .btn-refresh:hover::after, .btn-primary:hover::after { left: 130%; }
+        button:focus-visible, select:focus-visible { outline: 2px solid #55d8ff; outline-offset: 2px; }
+
+        /* sidebar links glide */
+        .sidebar-link:hover { transform: translateX(4px); }
+        .sidebar-link .icon { display: inline-block; transition: transform 0.2s; }
+        .sidebar-link:hover .icon { transform: scale(1.18); }
+        .sidebar-link.active .icon { transform: scale(1.1); }
+
+        /* table rows cascade in (works for every table on the page) */
+        tbody tr { animation: rowIn 0.35s ease-out backwards; }
+        tbody tr:nth-child(2) { animation-delay: 0.03s; }
+        tbody tr:nth-child(3) { animation-delay: 0.06s; }
+        tbody tr:nth-child(4) { animation-delay: 0.09s; }
+        tbody tr:nth-child(5) { animation-delay: 0.12s; }
+        tbody tr:nth-child(6) { animation-delay: 0.15s; }
+        tbody tr:nth-child(7) { animation-delay: 0.18s; }
+        tbody tr:nth-child(8) { animation-delay: 0.21s; }
+        tbody tr:nth-child(9) { animation-delay: 0.24s; }
+        tbody tr:nth-child(10) { animation-delay: 0.27s; }
+        tbody tr:nth-child(n+11) { animation-delay: 0.3s; }
+
+        /* modal overlay fades, not just appears */
+        .modal-overlay.open { animation: fadeIn 0.2s ease-out; }
+
+        /* waiting-for-driver / review badges breathe so live states are visible */
+        .badge-DISPATCHED .badge-dot,
+        .badge-HUMAN_REVIEW .badge-dot,
+        .badge-PENDING_VERIFICATION .badge-dot,
+        .badge-ACCEPTED .badge-dot,
+        .badge-EN_ROUTE .badge-dot { animation: pulse 1.6s ease-in-out infinite; }
+
+        /* stat cards lift on hover */
+        .stat-card:hover { transform: translateY(-3px); }
+
+        /* refresh button spins while data loads */
+        .spinning { animation: spin 0.8s linear infinite !important; }
+        /* text buttons pulse instead of rotating */
+        #refresh-btn.spinning { animation: btnBusy 0.9s ease-in-out infinite !important; }
+        @keyframes btnBusy { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+        /* replayed on every sidebar page switch */
+        .view-enter { animation: riseIn 0.4s ease-out backwards; }
+
+        /* toast pops in */
+        .toast.show { animation: toastPop 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15); }
+
         @media (max-width: 1240px) {
             .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .two-col { grid-template-columns: 1fr; }
@@ -897,11 +967,42 @@ function showView(view) {
     localStorage.setItem(VIEW_KEY, view);
     document.querySelectorAll('.view').forEach((section) => section.classList.add('hidden'));
     const target = $('view-' + view);
-    if (target) target.classList.remove('hidden');
+    if (target) {
+        target.classList.remove('hidden');
+        // Replay the entrance so every page change feels alive.
+        target.classList.remove('view-enter');
+        void target.offsetWidth;
+        target.classList.add('view-enter');
+    }
     document.querySelectorAll('.sidebar-link').forEach((link) => {
         link.classList.toggle('active', link.dataset.view === view);
     });
-    $('stats-grid').classList.toggle('hidden', view !== 'dashboard');
+    const grid = $('stats-grid');
+    grid.classList.toggle('hidden', view !== 'dashboard');
+    if (view === 'dashboard') {
+        grid.classList.remove('view-enter');
+        void grid.offsetWidth;
+        grid.classList.add('view-enter');
+    }
+}
+
+// Animated number tick for the stat cards.
+function countUp(el, value) {
+    if (!el) return;
+    const to = Number(value);
+    if (!Number.isFinite(to)) { el.textContent = value; return; }
+    const from = Number(el.dataset.v || 0);
+    el.dataset.v = to;
+    if (from === to) { el.textContent = to; return; }
+    const start = performance.now();
+    const dur = 600;
+    function frame(now) {
+        const p = Math.min(1, (now - start) / dur);
+        const eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = Math.round(from + (to - from) * eased);
+        if (p < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
 }
 
 document.querySelectorAll('.sidebar-link').forEach((link) => {
@@ -942,9 +1043,10 @@ $('reset-btn').addEventListener('click', resetAllDemoData);
 $('refresh-btn').addEventListener('click', async () => {
     const btn = $('refresh-btn');
     btn.disabled = true;
+    btn.classList.add('spinning');
     try { await refreshAll(); toast('Dashboard refreshed.'); }
     catch (err) { toast(err.message, 'error'); }
-    finally { btn.disabled = false; }
+    finally { btn.disabled = false; btn.classList.remove('spinning'); }
 });
 
 /* ── Data loading ────────────────────────────────────────────── */
@@ -1008,13 +1110,13 @@ function renderStats() {
         ['incidents', 'verified', 'dispatches', 'users'].forEach((k) => { $('stat-' + k).textContent = '—'; });
         return;
     }
-    $('stat-incidents').textContent = s.incidents.total;
+    countUp($('stat-incidents'), s.incidents.total);
     $('stat-incidents-sub').textContent = s.incidents.active + ' active · ' + s.incidents.pending_verification + ' in verification';
-    $('stat-verified').textContent = s.incidents.verified;
+    countUp($('stat-verified'), s.incidents.verified);
     $('stat-verified-sub').textContent = 'Verified incidents';
-    $('stat-dispatches').textContent = s.dispatches.total;
+    countUp($('stat-dispatches'), s.dispatches.total);
     $('stat-dispatches-sub').textContent = s.dispatches.available + ' awaiting a driver';
-    $('stat-users').textContent = s.users.total;
+    countUp($('stat-users'), s.users.total);
     $('stat-users-sub').textContent = s.drivers.approved + ' approved drivers · ' + s.drivers.pending + ' pending';
 }
 
