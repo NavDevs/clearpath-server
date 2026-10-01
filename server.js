@@ -130,9 +130,33 @@ async function resolveDriver(ref) {
 }
 
 // AUTHENTICATION
+// ── Auth input validation ───────────────────────────────────────────────────
+// Every auth endpoint validates its own input before touching the database so
+// malformed or empty credentials never reach a query.
+const PHONE_RE = /^\d{10}$/;
+const DRIVER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{2,19}$/;
+const VEHICLE_NO_RE = /^[A-Za-z0-9][A-Za-z0-9 -]{2,19}$/;
+const digitsOf = (v) => String(v ?? '').replace(/\D/g, '');
+
+function validateCitizenFields({ phone, name, password }, { registering }) {
+  if (!PHONE_RE.test(phone)) return 'Enter a valid 10-digit phone number';
+  if (registering) {
+    if (!name || name.length < 2 || name.length > 80) return 'Enter your full name (2-80 characters)';
+    if (password.length < 6) return 'Password must be at least 6 characters';
+  } else {
+    if (!password) return 'Password is required';
+  }
+  return null;
+}
+
 app.post('/api/auth/register', async (req, res) => {
-  const { phone, name, password } = req.body;
-  
+  const phone = digitsOf(req.body.phone);
+  const name = String(req.body.name ?? '').trim();
+  const password = String(req.body.password ?? '');
+
+  const invalid = validateCitizenFields({ phone, name, password }, { registering: true });
+  if (invalid) return res.status(400).json({ error: invalid });
+
   const existing = await dbGet('SELECT * FROM users WHERE phone = ?', [phone]);
   if (existing) {
     return res.status(400).json({ error: 'Phone number already registered' });
@@ -150,8 +174,12 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { phone, password } = req.body;
-  
+  const phone = digitsOf(req.body.phone);
+  const password = String(req.body.password ?? '');
+
+  const invalid = validateCitizenFields({ phone, name: null, password }, { registering: false });
+  if (invalid) return res.status(400).json({ error: invalid });
+
   const user = await dbGet('SELECT * FROM users WHERE phone = ?', [phone]);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
@@ -197,12 +225,29 @@ app.post('/api/auth/signalaid', async (req, res) => {
 
 // DRIVER REGISTRATION / APPROVAL
 app.post('/api/auth/driver/register', async (req, res) => {
-  const { name, phone, driver_id, vehicle_no, vehicle_type, organization } = req.body;
-  
+  const name = String(req.body.name ?? '').trim();
+  const phone = digitsOf(req.body.phone);
+  const driver_id = String(req.body.driver_id ?? '').trim().toUpperCase();
+  const vehicle_no = String(req.body.vehicle_no ?? '').trim().toUpperCase();
+  const vehicle_type = String(req.body.vehicle_type ?? '').trim().toLowerCase();
+  const organization = String(req.body.organization ?? '').trim();
+
   if (!name || !phone || !driver_id || !vehicle_no || !vehicle_type) {
     return res.status(400).json({ error: 'All fields required: name, phone, driver_id, vehicle_no, vehicle_type' });
   }
-  
+  if (name.length < 2 || name.length > 80) {
+    return res.status(400).json({ error: 'Enter your full name (2-80 characters)' });
+  }
+  if (!PHONE_RE.test(phone)) {
+    return res.status(400).json({ error: 'Enter a valid 10-digit phone number' });
+  }
+  if (!DRIVER_ID_RE.test(driver_id)) {
+    return res.status(400).json({ error: 'Driver ID must be 3-20 letters, numbers or dashes (e.g. DRV-204)' });
+  }
+  if (!VEHICLE_NO_RE.test(vehicle_no)) {
+    return res.status(400).json({ error: 'Vehicle number must be 4-20 letters, numbers, spaces or dashes (e.g. AMB-1187)' });
+  }
+
   if (!['ambulance', 'fire'].includes(vehicle_type)) {
     return res.status(400).json({ error: 'vehicle_type must be ambulance or fire' });
   }
@@ -240,7 +285,15 @@ app.post('/api/auth/driver/register', async (req, res) => {
 
 // Driver login - returns JWT token
 app.post('/api/auth/driver/login', async (req, res) => {
-  const { driver_id, vehicle_no } = req.body;
+  const driver_id = String(req.body.driver_id ?? '').trim().toUpperCase();
+  const vehicle_no = String(req.body.vehicle_no ?? '').trim().toUpperCase();
+
+  if (!driver_id || !vehicle_no) {
+    return res.status(400).json({ error: 'Driver ID and vehicle number are required' });
+  }
+  if (!DRIVER_ID_RE.test(driver_id) || !VEHICLE_NO_RE.test(vehicle_no)) {
+    return res.status(400).json({ error: 'Invalid driver ID or vehicle number format' });
+  }
   
   const user = await dbGet('SELECT * FROM users WHERE driver_id = ? AND vehicle_no = ?', [driver_id, vehicle_no]);
   if (!user) {
@@ -1099,9 +1152,16 @@ app.get('/api/route', async (req, res) => {
 });
 
 // GET active trip for driver (restart persistence)
+// Active (in-progress) trip for a driver, joined with its incident so the
+// driver app can rebuild the response screen after a re-login or restart.
 app.get('/api/trips/active/:driver_id', async (req, res) => {
   const trip = await dbGet(
-    "SELECT * FROM emergency_trips WHERE driver_id = ? AND status IN ('en_route','arrived') ORDER BY started_at DESC LIMIT 1",
+    `SELECT t.*, r.latitude, r.longitude, r.type, r.description, r.address,
+            r.photo_url, r.created_at AS reported_at, 'HIGH' AS priority
+     FROM emergency_trips t
+     LEFT JOIN road_reports r ON r.id = t.report_id
+     WHERE t.driver_id = ? AND t.status IN ('en_route','arrived')
+     ORDER BY t.started_at DESC LIMIT 1`,
     [req.params.driver_id]
   );
   res.json(trip || null);
