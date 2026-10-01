@@ -46,6 +46,12 @@ const SALT_ROUNDS = 10;
 const JWT_SECRET = process.env.JWT_SECRET || 'clearpath-dev-secret-change-in-production';
 const JWT_EXPIRES_IN = '30d';
 
+// AI verification is opt-in. With it off (the default) a submitted incident stays
+// ACTIVE and an admin verifies or rejects it by hand from the dashboard, so the
+// whole verification path is manual and deterministic. Set AI_VERIFICATION=on to
+// hand verification back to the AI pipeline.
+const AI_VERIFICATION_ENABLED = String(process.env.AI_VERIFICATION || 'off').toLowerCase() === 'on';
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { 
@@ -580,6 +586,8 @@ app.get('/api/reports', async (req, res) => {
   res.json(reports);
 });
 
+// Loaded regardless of the AI_VERIFICATION switch: with the switch off it is simply
+// never called, and the module is harmless to require.
 const { analyzeIncident } = require('./ai_service');
 
 app.post('/api/reports', upload.single('photo'), async (req, res) => {
@@ -629,9 +637,15 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   // The reporter's own app already inserts the returned report locally.
   io.emit('report_updated', newReport);
 
-  // AI verification runs async: ACTIVE -> PENDING_VERIFICATION -> VERIFIED/HUMAN_REVIEW/REJECTED.
-  analyzeIncident(newReport, (event, data) => io.emit(event, data))
-    .catch(err => console.error("AI Pipeline failed:", err));
+  // Manual mode (AI_VERIFICATION off): the incident stays ACTIVE and waits for an
+  // admin to verify or reject it from the dashboard. Automated mode: ACTIVE ->
+  // PENDING_VERIFICATION -> VERIFIED / HUMAN_REVIEW / REJECTED.
+  if (AI_VERIFICATION_ENABLED) {
+    analyzeIncident(newReport, (event, data) => io.emit(event, data))
+      .catch(err => console.error("AI Pipeline failed:", err));
+  } else {
+    console.log(`[ClearPath] Incident ${id} is ACTIVE and waiting for manual admin verification.`);
+  }
 
   io.emit('points_updated', { user_id, points });
   notifyAdmin();
@@ -930,31 +944,54 @@ app.get('/api/dispatches/nearby', async (req, res) => {
   res.json(filtered);
 });
 
-// GET route via OSRM (no API key needed)
+// GET route via OSRM (no API key needed).
+//
+// Returns the real driving route between two points: distance, duration and the
+// road geometry as [lat, lon] pairs, so the Signal-Aid app can draw the actual
+// shortest road path (not a straight line) on its map. Routing is delegated to
+// OSRM rather than hand-rolled.
 app.get('/api/route', async (req, res) => {
-  const { fromLat, fromLon, toLat, toLon } = req.query;
-  if (!fromLat || !fromLon || !toLat || !toLon) return res.status(400).json({ error: 'Missing coords' });
+  const fromLat = Number(req.query.fromLat);
+  const fromLon = Number(req.query.fromLon);
+  const toLat = Number(req.query.toLat);
+  const toLon = Number(req.query.toLon);
+  if (![fromLat, fromLon, toLat, toLon].every(Number.isFinite)) {
+    return res.status(400).json({ error: 'Missing or invalid coords' });
+  }
+
+  const straightLineKm = haversineKm(fromLat, fromLon, toLat, toLon);
+
   try {
-    const osrmUrl = `http://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=false&steps=false`;
-    const response = await fetch(osrmUrl, { signal: AbortSignal.timeout(5000) });
-    if (!response.ok) throw new Error('OSRM error');
+    const osrmUrl = `http://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}` +
+      '?overview=full&geometries=geojson&steps=false';
+    const response = await fetch(osrmUrl, { signal: AbortSignal.timeout(6000) });
+    if (!response.ok) throw new Error(`OSRM responded ${response.status}`);
     const data = await response.json();
-    const route = data.routes[0];
-    const distanceKm = (route.distance / 1000).toFixed(2);
-    const durationMin = Math.ceil(route.duration / 60);
-    // Estimate signal count: approx 1.5 signals per km in urban areas
-    const signalCount = Math.max(1, Math.round(distanceKm * 1.5));
-    res.json({ distanceKm: parseFloat(distanceKm), durationMin, signalCount });
+    const route = data.routes && data.routes[0];
+    if (!route) throw new Error('OSRM returned no route');
+
+    // GeoJSON is [lon, lat]; the map layers want [lat, lon].
+    const geometry = ((route.geometry && route.geometry.coordinates) || [])
+      .map(([lon, lat]) => [lat, lon]);
+    const distanceKm = Number((route.distance / 1000).toFixed(2));
+
+    res.json({
+      distanceKm,
+      durationMin: Math.max(1, Math.ceil(route.duration / 60)),
+      geometry,
+      provider: 'osrm',
+    });
   } catch (err) {
-    // Fallback: estimate based on straight-line distance
-    const R = 6371;
-    const dLat = (toLat - fromLat) * Math.PI / 180;
-    const dLon = (toLon - fromLon) * Math.PI / 180;
-    const a = Math.sin(dLat/2)**2 + Math.cos(fromLat * Math.PI/180) * Math.cos(toLat * Math.PI/180) * Math.sin(dLon/2)**2;
-    const distanceKm = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(2));
-    const durationMin = Math.ceil(distanceKm / 0.5); // assume 30 km/h avg speed
-    const signalCount = Math.max(1, Math.round(distanceKm * 1.5));
-    res.json({ distanceKm, durationMin, signalCount, fallback: true });
+    // Routing provider unavailable: report the honest straight-line distance and a
+    // two-point geometry instead of inventing a road path.
+    console.warn('[ClearPath] OSRM unavailable, using straight-line fallback:', err.message || err);
+    res.json({
+      distanceKm: Number(straightLineKm.toFixed(2)),
+      durationMin: Math.max(1, Math.ceil((straightLineKm / 30) * 60)),
+      geometry: [[fromLat, fromLon], [toLat, toLon]],
+      provider: 'straight-line',
+      fallback: true,
+    });
   }
 });
 
@@ -1021,8 +1058,9 @@ app.get('/health', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log('\nðŸ›£ï¸  ClearPath Command Server v1.0');
+  console.log('\nðŸ›£ï¸  ClearPath Command Server v1.0');
   console.log(`   Dashboard : http://localhost:${PORT}`);
+  console.log(`   Incidents : admin-verified (manual) | AI verification: ${AI_VERIFICATION_ENABLED ? 'ON' : 'OFF'}`);
   console.log(`   TTL rules : accident=2h | congestion=3h | blocked=4h | flooding=6h | pothole=48h\n`);
 });
 
