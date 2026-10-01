@@ -105,6 +105,10 @@ async function initDb() {
       password TEXT,
       driver_id TEXT UNIQUE,
       vehicle_no TEXT,
+      vehicle_type TEXT,
+      organization TEXT,
+      approval_status TEXT DEFAULT 'pending' CHECK(approval_status IN ('pending', 'approved', 'rejected')),
+      availability TEXT DEFAULT 'OFFLINE' CHECK(availability IN ('OFFLINE', 'AVAILABLE', 'BUSY')),
       points INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`);
@@ -114,6 +118,13 @@ async function initDb() {
     } catch (e) {}
 
     try { await client.query("ALTER TABLE users ADD COLUMN availability TEXT DEFAULT 'OFFLINE'"); } catch(e) {}
+
+    // Add driver-specific columns if they don't exist
+    try { await client.query("ALTER TABLE users ADD COLUMN driver_id TEXT UNIQUE"); } catch(e) {}
+    try { await client.query("ALTER TABLE users ADD COLUMN vehicle_no TEXT"); } catch(e) {}
+    try { await client.query("ALTER TABLE users ADD COLUMN vehicle_type TEXT"); } catch(e) {}
+    try { await client.query("ALTER TABLE users ADD COLUMN organization TEXT"); } catch(e) {}
+    try { await client.query("ALTER TABLE users ADD COLUMN approval_status TEXT DEFAULT 'pending' CHECK(approval_status IN ('pending', 'approved', 'rejected'))"); } catch(e) {}
 
     await client.query(`CREATE TABLE IF NOT EXISTS road_reports (
       id TEXT PRIMARY KEY,
@@ -190,6 +201,30 @@ async function initDb() {
       driver_id TEXT REFERENCES users(id),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // Allow REJECTED status for incident moderation (spec: REJECTED flow)
+    try { await client.query("ALTER TABLE road_reports DROP CONSTRAINT IF EXISTS road_reports_status_check"); } catch(e) {}
+    try { await client.query("ALTER TABLE road_reports ADD CONSTRAINT road_reports_status_check CHECK(status IN ('pending', 'verified', 'resolved', 'rejected'))"); } catch(e) {}
+
+    // Driver live location for nearby dispatch
+    try { await client.query("ALTER TABLE users ADD COLUMN current_latitude DOUBLE PRECISION"); } catch(e) {}
+    try { await client.query("ALTER TABLE users ADD COLUMN current_longitude DOUBLE PRECISION"); } catch(e) {}
+    try { await client.query("ALTER TABLE users ADD COLUMN last_location_update TIMESTAMP"); } catch(e) {}
+
+    // Driver Approval Requests Table
+    await client.query(`CREATE TABLE IF NOT EXISTS driver_approval_requests (
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES users(id),
+      driver_id TEXT,
+      vehicle_no TEXT,
+      vehicle_type TEXT,
+      organization TEXT,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+      reviewed_by TEXT,
+      reviewed_at TIMESTAMP,
+      rejection_reason TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`);
 
     client.release();

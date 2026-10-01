@@ -6,6 +6,7 @@ const multer = require('multer');
 const path = require('path');
 const { randomUUID: uuidv4 } = require('crypto');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const { dbRun, dbGet, dbAll, initPromise } = require('./database');
 
@@ -15,6 +16,8 @@ const supabase = createClient(
 );
 
 const SALT_ROUNDS = 10;
+const JWT_SECRET = process.env.JWT_SECRET || 'clearpath-dev-secret-change-in-production';
+const JWT_EXPIRES_IN = '30d';
 
 const app = express();
 const server = http.createServer(app);
@@ -41,6 +44,44 @@ const upload = multer({
   // No file size limit, no type filter - upload anything
 });
 const BUCKET = 'report-photos';
+
+// JWT Authentication Middleware
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+}
+
+// Role-based authorization middleware
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    next();
+  };
+}
+
+// Driver approval status check
+async function requireApprovedDriver(req, res, next) {
+  if (!req.user || req.user.role !== 'emergency_driver') {
+    return res.status(403).json({ error: 'Driver access required' });
+  }
+  const user = await dbGet('SELECT approval_status FROM users WHERE id = ?', [req.user.id]);
+  if (!user || user.approval_status !== 'approved') {
+    return res.status(403).json({ error: 'Driver not approved', approval_status: user?.approval_status || 'pending' });
+  }
+  next();
+}
 
 // Global Real-time
 io.on('connection', (socket) => {
@@ -105,7 +146,304 @@ app.post('/api/auth/signalaid', async (req, res) => {
   res.json({ user });
 });
 
-// REPORTS
+// DRIVER REGISTRATION / APPROVAL
+app.post('/api/auth/driver/register', async (req, res) => {
+  const { name, phone, driver_id, vehicle_no, vehicle_type, organization } = req.body;
+  
+  if (!name || !phone || !driver_id || !vehicle_no || !vehicle_type) {
+    return res.status(400).json({ error: 'All fields required: name, phone, driver_id, vehicle_no, vehicle_type' });
+  }
+  
+  if (!['ambulance', 'fire'].includes(vehicle_type)) {
+    return res.status(400).json({ error: 'vehicle_type must be ambulance or fire' });
+  }
+
+  const existingDriver = await dbGet('SELECT * FROM users WHERE driver_id = ?', [driver_id]);
+  if (existingDriver) {
+    return res.status(400).json({ error: 'Driver ID already registered' });
+  }
+
+  const existingPhone = await dbGet('SELECT * FROM users WHERE phone = ?', [phone]);
+  if (existingPhone) {
+    return res.status(400).json({ error: 'Phone number already registered' });
+  }
+
+  const id = uuidv4();
+  await dbRun(
+    `INSERT INTO users (id, role, name, phone, driver_id, vehicle_no, vehicle_type, organization, approval_status) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    [id, 'emergency_driver', name, phone, driver_id, vehicle_no, vehicle_type, organization || '']
+  );
+
+  // Create approval request record
+  const requestId = uuidv4();
+  await dbRun(
+    `INSERT INTO driver_approval_requests (id, user_id, driver_id, vehicle_no, vehicle_type, organization, status) 
+     VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+    [requestId, id, driver_id, vehicle_no, vehicle_type, organization || '']
+  );
+
+  notifyAdmin();
+  
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [id]);
+  res.json({ user, message: 'Registration submitted for approval. Wait for admin approval.' });
+});
+
+// Driver login - returns JWT token
+app.post('/api/auth/driver/login', async (req, res) => {
+  const { driver_id, vehicle_no } = req.body;
+  
+  const user = await dbGet('SELECT * FROM users WHERE driver_id = ? AND vehicle_no = ?', [driver_id, vehicle_no]);
+  if (!user) {
+    return res.status(404).json({ error: 'Driver not found' });
+  }
+  
+  if (user.approval_status !== 'approved') {
+    return res.status(403).json({ 
+      error: 'Driver not approved', 
+      approval_status: user.approval_status,
+      message: user.approval_status === 'pending' ? 'Waiting for admin approval' : 'Registration was rejected'
+    });
+  }
+
+  // Generate JWT token
+  const token = jwt.sign(
+    { id: user.id, role: user.role, driver_id: user.driver_id },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+
+  // Mark driver as available
+  await dbRun('UPDATE users SET availability = ? WHERE id = ?', ['AVAILABLE', user.id]);
+  
+  res.json({ user, token });
+});
+
+// Get current driver profile (requires auth)
+app.get('/api/driver/profile', authMiddleware, requireApprovedDriver, async (req, res) => {
+  const user = await dbGet('SELECT id, name, phone, driver_id, vehicle_no, vehicle_type, organization, approval_status, availability, points, created_at FROM users WHERE id = ?', [req.user.id]);
+  if (!user) {
+    return res.status(404).json({ error: 'Driver not found' });
+  }
+  res.json({ user });
+});
+
+// Update driver availability (requires auth)
+app.patch('/api/driver/availability', authMiddleware, requireApprovedDriver, async (req, res) => {
+  const { availability } = req.body;
+  if (!['OFFLINE', 'AVAILABLE', 'BUSY'].includes(availability)) {
+    return res.status(400).json({ error: 'Invalid availability' });
+  }
+  await dbRun('UPDATE users SET availability = ? WHERE id = ?', [availability, req.user.id]);
+  const user = await dbGet('SELECT id, availability, driver_id, vehicle_no FROM users WHERE id = ?', [req.user.id]);
+  io.emit('driver.availability_updated', user);
+  res.json(user);
+});
+
+// ADMIN ENDPOINTS
+// Get all driver approval requests
+app.get('/api/admin/driver-requests', authMiddleware, requireRole('admin'), async (req, res) => {
+  const requests = await dbAll(`
+    SELECT dar.*, u.name, u.phone, u.vehicle_type, u.organization
+    FROM driver_approval_requests dar
+    JOIN users u ON dar.user_id = u.id
+    ORDER BY dar.created_at DESC
+  `);
+  res.json(requests);
+});
+
+// Approve driver
+app.post('/api/admin/driver-requests/:id/approve', authMiddleware, requireRole('admin'), async (req, res) => {
+  const request = await dbGet('SELECT * FROM driver_approval_requests WHERE id = ?', [req.params.id]);
+  if (!request) {
+    return res.status(404).json({ error: 'Request not found' });
+  }
+  if (request.status !== 'pending') {
+    return res.status(400).json({ error: 'Request already processed' });
+  }
+
+  await dbRun('UPDATE driver_approval_requests SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?', 
+    ['approved', req.user.id, new Date().toISOString(), req.params.id]);
+  await dbRun('UPDATE users SET approval_status = ? WHERE id = ?', ['approved', request.user_id]);
+
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [request.user_id]);
+  io.emit('driver_approval_updated', { user_id: request.user_id, status: 'approved' });
+  notifyAdmin();
+  
+  res.json({ message: 'Driver approved', user });
+});
+
+// Reject driver
+app.post('/api/admin/driver-requests/:id/reject', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { rejection_reason } = req.body;
+  const request = await dbGet('SELECT * FROM driver_approval_requests WHERE id = ?', [req.params.id]);
+  if (!request) {
+    return res.status(404).json({ error: 'Request not found' });
+  }
+  if (request.status !== 'pending') {
+    return res.status(400).json({ error: 'Request already processed' });
+  }
+
+  await dbRun('UPDATE driver_approval_requests SET status = ?, reviewed_by = ?, reviewed_at = ?, rejection_reason = ? WHERE id = ?', 
+    ['rejected', req.user.id, new Date().toISOString(), rejection_reason || 'No reason provided', req.params.id]);
+  await dbRun('UPDATE users SET approval_status = ? WHERE id = ?', ['rejected', request.user_id]);
+
+  io.emit('driver_approval_updated', { user_id: request.user_id, status: 'rejected', reason: rejection_reason });
+  notifyAdmin();
+  
+  res.json({ message: 'Driver rejected' });
+});
+
+// Get all drivers (for admin)
+app.get('/api/admin/drivers', authMiddleware, requireRole('admin'), async (req, res) => {
+  const drivers = await dbAll(`
+    SELECT id, name, phone, driver_id, vehicle_no, vehicle_type, organization, 
+           approval_status, availability, points, created_at
+    FROM users 
+    WHERE role = 'emergency_driver'
+    ORDER BY created_at DESC
+  `);
+  res.json(drivers);
+});
+
+// Get all incidents (for admin)
+app.get('/api/admin/incidents', authMiddleware, requireRole('admin'), async (req, res) => {
+  const incidents = await dbAll(`
+    SELECT r.*, u.name as reporter_name, u.phone as reporter_phone,
+           ai.detected_type, ai.confidence, ai.severity, ai.emergency_recommended
+    FROM road_reports r
+    LEFT JOIN users u ON r.user_id = u.id
+    LEFT JOIN ai_analyses ai ON ai.report_id = r.id
+    ORDER BY r.created_at DESC
+  `);
+  res.json(incidents);
+});
+
+// Get all dispatches (for admin)
+app.get('/api/admin/dispatches', authMiddleware, requireRole('admin'), async (req, res) => {
+  const dispatches = await dbAll(`
+    SELECT d.*, r.type as incident_type, r.address, r.latitude, r.longitude,
+           u.name as driver_name, u.driver_id, u.vehicle_no
+    FROM dispatches d
+    JOIN road_reports r ON d.report_id = r.id
+    LEFT JOIN users u ON d.driver_id = u.id
+    ORDER BY d.created_at DESC
+  `);
+  res.json(dispatches);
+});
+
+// Get all trips (for admin)
+app.get('/api/admin/trips', authMiddleware, requireRole('admin'), async (req, res) => {
+  const trips = await dbAll(`
+    SELECT et.*, r.type as incident_type, r.address,
+           u.name as driver_name, u.driver_id, u.vehicle_no
+    FROM emergency_trips et
+    JOIN road_reports r ON et.report_id = r.id
+    LEFT JOIN users u ON et.driver_id = u.id
+    ORDER BY et.started_at DESC
+  `);
+  res.json(trips);
+});
+
+// Update incident status (admin)
+app.patch('/api/admin/incidents/:id/status', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { status, lifecycle_state } = req.body;
+  if (status) {
+    await dbRun('UPDATE road_reports SET status = ? WHERE id = ?', [status, req.params.id]);
+  }
+  if (lifecycle_state) {
+    await dbRun('UPDATE road_reports SET lifecycle_state = ? WHERE id = ?', [lifecycle_state, req.params.id]);
+  }
+  const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+  io.emit('report_updated', updated);
+  notifyAdmin();
+  res.json(updated);
+});
+
+// Admin: Manually verify incident (for human review)
+app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin'), async (req, res) => {
+  const report = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+  if (!report) {
+    return res.status(404).json({ error: 'Incident not found' });
+  }
+
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'VERIFIED', status = 'verified' WHERE id = ?", [req.params.id]);
+  let updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+  io.emit('report_updated', updatedReport);
+  io.emit('new_incident', updatedReport);
+
+  // Only accident/fire create Signal-Aid dispatches.
+  const norm = String(report.type || '').toLowerCase();
+  const requiredVehicle = norm === 'fire' ? 'fire' : norm === 'accident' ? 'ambulance' : null;
+  let fullDispatch = null;
+  if (requiredVehicle) {
+    const existing = await dbGet('SELECT id FROM dispatches WHERE report_id = ?', [req.params.id]);
+    let dispatchId = existing?.id;
+    if (!dispatchId) {
+      dispatchId = uuidv4();
+      await dbRun(
+        `INSERT INTO dispatches (id, report_id, required_vehicle, status) VALUES (?, ?, ?, 'available')`,
+        [dispatchId, req.params.id, requiredVehicle]
+      );
+    }
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'verified' WHERE id = ?", [req.params.id]);
+    fullDispatch = await dbGet(`
+      SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
+      FROM dispatches d
+      JOIN road_reports r ON d.report_id = r.id
+      WHERE d.id = ?`, [dispatchId]
+    );
+    updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+    io.emit('report_updated', updatedReport);
+    io.emit('dispatch.created', fullDispatch);
+  }
+  notifyAdmin();
+
+  res.json({ report: updatedReport, dispatch: fullDispatch });
+});
+
+// Admin: Reject incident
+app.post('/api/admin/incidents/:id/reject', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { reason } = req.body;
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'REJECTED', status = 'rejected' WHERE id = ?", [req.params.id]);
+  const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+  io.emit('report_updated', updated);
+  notifyAdmin();
+  res.json(updated);
+});
+
+// Admin: Get system stats
+app.get('/api/admin/stats', authMiddleware, requireRole('admin'), async (req, res) => {
+  const totalUsers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'citizen'");
+  const totalDrivers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'emergency_driver'");
+  const approvedDrivers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'emergency_driver' AND approval_status = 'approved'");
+  const pendingDrivers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'emergency_driver' AND approval_status = 'pending'");
+  const totalIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports");
+  const pendingIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state IN ('ACTIVE','PENDING_VERIFICATION','HUMAN_REVIEW')");
+  const verifiedIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state IN ('VERIFIED','DISPATCHED','ACCEPTED','EN_ROUTE','ARRIVED')");
+  const activeIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state = 'ACTIVE'");
+  const totalDispatches = await dbGet("SELECT COUNT(*) as count FROM dispatches");
+  const activeDispatches = await dbGet("SELECT COUNT(*) as count FROM dispatches WHERE status = 'available'");
+  
+  res.json({
+    users: { total: totalUsers?.count || 0 },
+    drivers: { 
+      total: totalDrivers?.count || 0, 
+      approved: approvedDrivers?.count || 0, 
+      pending: pendingDrivers?.count || 0 
+    },
+    incidents: { 
+      total: totalIncidents?.count || 0,
+      pending_verification: pendingIncidents?.count || 0,
+      verified: verifiedIncidents?.count || 0,
+      active: activeIncidents?.count || 0
+    },
+    dispatches: { 
+      total: totalDispatches?.count || 0,
+      available: activeDispatches?.count || 0
+    }
+  });
+});
 app.get('/api/reports', async (req, res) => {
   const reports = await dbAll('SELECT * FROM road_reports ORDER BY created_at DESC');
   res.json(reports);
@@ -132,32 +470,40 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     }
   }
 
-  // Initial insert as PENDING_AI
-  await dbRun(`INSERT INTO road_reports 
-    (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_AI')`,
-    [id, user_id, type, description, latitude, longitude, address, photo_url, points]
+  // Spec: initial incident status must be ACTIVE.
+  // Normalize incident type: accident | fire | other (+ legacy map types).
+  const rawType = String(type || 'other').trim().toLowerCase();
+  const typeMap = {
+    accident: 'accident', fire: 'fire', other: 'other', emergency: 'other',
+    other_emergency: 'other', blocked: 'blocked', congestion: 'congestion',
+    pothole: 'pothole', flooding: 'flooding', roadwork: 'roadwork', road_work: 'roadwork',
+  };
+  const normType = typeMap[rawType] || 'other';
+  await dbRun(`INSERT INTO road_reports
+    (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
+    [id, user_id, normType, description, latitude, longitude, address, photo_url, points]
   );
-  
+
   const newReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [id]);
-  
+
   await dbRun('INSERT INTO reward_events (id, user_id, report_id, points, reason) VALUES (?, ?, ?, ?, ?)',
     [uuidv4(), user_id, id, points || 0, 'report_submission']
   );
   await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [points || 0, user_id]);
 
-  // Show on Roadly immediately so submit feels instant; AI may upgrade to VERIFIED + dispatch.
-  io.emit('new_incident', newReport);
-  
-  // Phase 4: Trigger the AI engine in the background asynchronously
-  // We do NOT `await` this, so the citizen's phone gets a fast response.
+  // Spec: do NOT broadcast unverified incidents as confirmed emergencies.
+  // The reporter's own app already inserts the returned report locally.
+  io.emit('report_updated', newReport);
+
+  // AI verification runs async: ACTIVE -> PENDING_VERIFICATION -> VERIFIED/HUMAN_REVIEW/REJECTED.
   analyzeIncident(newReport, (event, data) => io.emit(event, data))
     .catch(err => console.error("AI Pipeline failed:", err));
-  
+
   io.emit('points_updated', { user_id, points });
   notifyAdmin();
-  
-  // Return the pending report immediately to the citizen's app
+
+  // Return the ACTIVE report immediately to the citizen's app
   res.json(newReport);
 });
 
@@ -171,43 +517,60 @@ app.post('/api/reports/:id/status', async (req, res) => {
   res.json(updatedReport);
 });
 
-// DISPATCHES & ACCEPTANCE
+// DISPATCHES & ACCEPTANCE (atomic first-driver-wins)
 app.post('/api/dispatches/:id/accept', async (req, res) => {
   const dispatchId = req.params.id;
   const { driver_id, vehicle_no } = req.body;
 
-  // 1. Concurrency Protection (Phase 12 / 40)
-  // Ensure the dispatch is still 'available'
   const dispatch = await dbGet('SELECT * FROM dispatches WHERE id = ?', [dispatchId]);
   if (!dispatch) return res.status(404).json({ error: 'Dispatch not found' });
   if (dispatch.status !== 'available') {
     return res.status(409).json({ error: 'Dispatch already accepted by another driver' });
   }
 
-  // 2. Mark dispatch as accepted
-  await dbRun("UPDATE dispatches SET status = 'accepted', driver_id = ? WHERE id = ? AND status = 'available'", 
-    [driver_id, dispatchId]
+  // Backend authorization: driver must exist, be approved, and be available.
+  const driver = await dbGet('SELECT * FROM users WHERE driver_id = ? AND vehicle_no = ?', [driver_id, vehicle_no]);
+  if (!driver || driver.role !== 'emergency_driver') {
+    return res.status(403).json({ error: 'Only approved emergency drivers can accept' });
+  }
+  if (driver.approval_status !== 'approved') {
+    return res.status(403).json({ error: 'Driver not approved', approval_status: driver.approval_status || 'pending' });
+  }
+  if (driver.availability && driver.availability !== 'AVAILABLE') {
+    return res.status(409).json({ error: `Driver is ${driver.availability}, must be AVAILABLE` });
+  }
+  // Vehicle-type eligibility: ambulance jobs need ambulance drivers, fire jobs need fire drivers.
+  if (driver.vehicle_type && dispatch.required_vehicle && driver.vehicle_type !== dispatch.required_vehicle) {
+    return res.status(403).json({ error: `This request needs a ${dispatch.required_vehicle} vehicle` });
+  }
+
+  // Atomic claim: only one driver can move available -> accepted.
+  await dbRun("UPDATE dispatches SET status = 'accepted', driver_id = ? WHERE id = ? AND status = 'available'",
+    [driver.id, dispatchId]
   );
-  
-  // Verify the atomic update succeeded (in case someone beat us to it by milliseconds)
+
   const verify = await dbGet("SELECT status, driver_id FROM dispatches WHERE id = ?", [dispatchId]);
-  if (verify.driver_id !== driver_id) {
+  if (verify.driver_id !== driver.id) {
     return res.status(409).json({ error: 'Dispatch already accepted by another driver' });
   }
 
-  // 3. Create the Emergency Trip (Phase 13 / 19)
+  // Driver becomes BUSY; incident moves DISPATCHED -> ACCEPTED.
+  await dbRun('UPDATE users SET availability = ? WHERE id = ?', ['BUSY', driver.id]);
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'ACCEPTED', status = 'verified' WHERE id = ?", [dispatch.report_id]);
+
   const tripId = uuidv4();
-  await dbRun(`INSERT INTO emergency_trips 
+  await dbRun(`INSERT INTO emergency_trips
     (id, dispatch_id, driver_id, vehicle_no, report_id, status)
     VALUES (?, ?, ?, ?, ?, 'en_route')`,
-    [tripId, dispatchId, driver_id, vehicle_no, dispatch.report_id]
+    [tripId, dispatchId, driver.id, vehicle_no, dispatch.report_id]
   );
 
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [tripId]);
-  
-  // Broadcast to other drivers to remove it from their screens
-  io.emit('dispatch.accepted', { dispatchId, driver_id });
+  const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
+
+  io.emit('dispatch.accepted', { dispatchId, driver_id: driver.id });
   io.emit('trip.started', trip);
+  if (incident) io.emit('report_updated', incident);
   notifyAdmin();
 
   res.json(trip);
@@ -240,33 +603,86 @@ app.post('/api/trips', async (req, res) => {
   res.json(trip);
 });
 
-// PHASE 12: Live GPS location broadcast
+// Driver live GPS: updates driver row + trip, promotes ACCEPTED -> EN_ROUTE.
+app.patch('/api/driver/location', authMiddleware, requireApprovedDriver, async (req, res) => {
+  const { latitude, longitude, availability } = req.body;
+  if (latitude == null || longitude == null) return res.status(400).json({ error: 'latitude/longitude required' });
+  await dbRun('UPDATE users SET current_latitude = ?, current_longitude = ?, last_location_update = CURRENT_TIMESTAMP WHERE id = ?', [latitude, longitude, req.user.id]);
+  if (availability && ['OFFLINE', 'AVAILABLE', 'BUSY'].includes(availability)) {
+    await dbRun('UPDATE users SET availability = ? WHERE id = ?', [availability, req.user.id]);
+  }
+  const driver = await dbGet('SELECT id, driver_id, vehicle_no, vehicle_type, availability, current_latitude, current_longitude FROM users WHERE id = ?', [req.user.id]);
+  io.emit('driver.location_updated', { ...driver, timestamp: new Date().toISOString() });
+  res.json(driver);
+});
+
+// Live GPS location broadcast during an active response
 app.post('/api/trips/:id/location', async (req, res) => {
-  const { latitude, longitude } = req.body;
-  io.emit('trip.location_updated', { tripId: req.params.id, latitude, longitude });
+  const { latitude, longitude, driver_id } = req.body;
+  const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  // Ownership: only the assigned driver updates their active emergency.
+  if (driver_id && trip.driver_id && driver_id !== trip.driver_id) {
+    return res.status(403).json({ error: 'Only the assigned driver can update this trip' });
+  }
+  if (latitude != null && longitude != null && trip.driver_id) {
+    await dbRun('UPDATE users SET current_latitude = ?, current_longitude = ?, last_location_update = CURRENT_TIMESTAMP WHERE id = ?', [latitude, longitude, trip.driver_id]);
+  }
+  // First movement promotes ACCEPTED -> EN_ROUTE.
+  if (trip.report_id) {
+    const incident = await dbGet('SELECT lifecycle_state FROM road_reports WHERE id = ?', [trip.report_id]);
+    if (incident && incident.lifecycle_state === 'ACCEPTED') {
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'EN_ROUTE', status = 'verified' WHERE id = ?", [trip.report_id]);
+      const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [trip.report_id]);
+      io.emit('report_updated', updated);
+    }
+  }
+  io.emit('trip.location_updated', { tripId: req.params.id, latitude, longitude, driver_id: trip.driver_id });
   res.json({ ok: true });
 });
 
-// PHASE 14: Trip state transitions (arrived / completed)
+// Trip state transitions: en_route -> arrived -> completed (RESOLVED)
 app.patch('/api/trips/:id/status', async (req, res) => {
   const { status, driver_id } = req.body;
   const allowed = ['en_route', 'arrived', 'completed'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
 
-  await dbRun("UPDATE emergency_trips SET status = ? WHERE id = ? AND driver_id = ?", [status, req.params.id, driver_id]);
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  // Ownership: only the assigned driver updates their active emergency.
+  if (driver_id && trip.driver_id && driver_id !== trip.driver_id) {
+    return res.status(403).json({ error: 'Only the assigned driver can update this trip' });
+  }
 
-  if (status === 'completed') {
-    if (trip && trip.dispatch_id) {
-      await dbRun("UPDATE dispatches SET status = 'completed' WHERE id = ?", [trip.dispatch_id]);
+  await dbRun("UPDATE emergency_trips SET status = ? WHERE id = ?", [status, req.params.id]);
+  const updatedTrip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
+
+  if (status === 'arrived') {
+    if (updatedTrip.report_id) {
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'ARRIVED', status = 'verified' WHERE id = ?", [updatedTrip.report_id]);
+      const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
+      if (incident) io.emit('report_updated', incident);
     }
-    io.emit('trip.completed', trip);
-  } else if (status === 'arrived') {
-    io.emit('trip.arrived', trip);
+    io.emit('trip.arrived', updatedTrip);
+  } else if (status === 'completed') {
+    if (updatedTrip.dispatch_id) {
+      await dbRun("UPDATE dispatches SET status = 'completed' WHERE id = ?", [updatedTrip.dispatch_id]);
+    }
+    if (updatedTrip.report_id) {
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [updatedTrip.report_id]);
+      const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
+      if (incident) io.emit('report_updated', incident);
+    }
+    if (updatedTrip.driver_id) {
+      await dbRun("UPDATE users SET availability = 'AVAILABLE' WHERE id = ?", [updatedTrip.driver_id]);
+    }
+    io.emit('trip.completed', updatedTrip);
+  } else {
+    io.emit('trip.started', updatedTrip);
   }
 
   notifyAdmin();
-  res.json(trip);
+  res.json(updatedTrip);
 });
 
 // LEADERBOARD / USERS
@@ -293,13 +709,46 @@ app.patch('/api/users/:id/availability', async (req, res) => {
 // GET available dispatches (Signal-Aid loads on app start)
 app.get('/api/dispatches', async (req, res) => {
   const dispatches = await dbAll(`
-    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
     FROM dispatches d
     JOIN road_reports r ON d.report_id = r.id
     WHERE d.status = 'available'
     ORDER BY d.created_at DESC
   `);
   res.json(dispatches);
+});
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// GET nearby available dispatches for an approved driver.
+app.get('/api/dispatches/nearby', async (req, res) => {
+  const { lat, lon, vehicle_type, radiusKm } = req.query;
+  const radius = Number(radiusKm) || 25;
+  const all = await dbAll(`
+    SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
+    FROM dispatches d
+    JOIN road_reports r ON d.report_id = r.id
+    WHERE d.status = 'available'
+    ORDER BY d.created_at DESC
+  `);
+  const filtered = all
+    .filter((d) => !vehicle_type || d.required_vehicle === vehicle_type)
+    .map((d) => {
+      let distanceKm = null;
+      if (lat != null && lon != null && d.latitude != null && d.longitude != null) {
+        distanceKm = Number(haversineKm(Number(lat), Number(lon), Number(d.latitude), Number(d.longitude)).toFixed(2));
+      }
+      return { ...d, distanceKm };
+    })
+    .filter((d) => d.distanceKm == null || d.distanceKm <= radius)
+    .sort((a, b) => (a.distanceKm ?? 9999) - (b.distanceKm ?? 9999));
+  res.json(filtered);
 });
 
 // GET route via OSRM (no API key needed)

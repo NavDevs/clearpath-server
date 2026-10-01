@@ -34,24 +34,27 @@ async function analyzeIncident(report, broadcastCallback) {
   try {
     console.log(`[AI Engine] Starting analysis for report ${report.id} (${report.type})...`);
 
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'AI_ANALYZED' WHERE id = ?", [report.id]);
-    broadcastCallback('report_updated', { ...report, lifecycle_state: 'AI_ANALYZED' });
+    // Spec: ACTIVE -> PENDING_VERIFICATION during AI analysis.
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'PENDING_VERIFICATION', status = 'pending' WHERE id = ?", [report.id]);
+    broadcastCallback('report_updated', { ...report, lifecycle_state: 'PENDING_VERIFICATION', status: 'pending' });
 
-    const prompt = `You are a smart city traffic AI. Analyze this road incident report.
+    const prompt = `You are an emergency incident verification AI. Analyze this road incident report.
     User categorized it as: ${String(report.type || '').toUpperCase()}
     User description: ${report.description || 'None provided'}
-    
-    Assess the situation based on the text and the provided image (if any).
+
+    Use ONLY evidence present in the image (if any) and the description. Do NOT invent details that are not visible or stated.
+    Assess whether this appears to be a genuine emergency.
     Output ONLY a raw JSON object with the following schema:
     {
       "detectedType": "ACCIDENT | FIRE | BLOCKED | CONGESTION | POTHOLE | OTHER",
       "severity": "LOW | MEDIUM | HIGH | CRITICAL",
       "confidence": 0.0 to 1.0,
+      "verdict": "likely genuine | insufficient evidence | likely invalid",
       "peoplePossiblyInjured": boolean,
       "vehiclesInvolved": boolean,
       "roadBlocked": boolean,
       "emergencyResponseRecommended": boolean,
-      "reason": "Brief 1-sentence explanation of your assessment"
+      "reason": "Brief 1-sentence explanation grounded ONLY in visible/stated evidence"
     }`;
 
     const content = [{ type: 'text', text: prompt }];
@@ -88,7 +91,7 @@ async function analyzeIncident(report, broadcastCallback) {
     const aiResult = JSON.parse(jsonResponse.choices[0].message.content);
 
     const analysisId = uuidv4();
-    await dbRun(`INSERT INTO ai_analyses 
+    await dbRun(`INSERT INTO ai_analyses
       (id, report_id, detected_type, severity, confidence, people_injured, road_blocked, emergency_recommended, raw_reasoning)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -96,68 +99,66 @@ async function analyzeIncident(report, broadcastCallback) {
         report.id,
         aiResult.detectedType || report.type,
         aiResult.severity || 'LOW',
-        aiResult.confidence || 0.5,
+        aiResult.confidence ?? 0.5,
         aiResult.peoplePossiblyInjured || false,
         aiResult.roadBlocked || false,
         aiResult.emergencyResponseRecommended || false,
-        aiResult.reason || 'No reasoning provided.'
+        `verdict=${aiResult.verdict || 'insufficient evidence'} | ${aiResult.reason || 'No reasoning provided.'}`
       ]
     );
 
-    console.log(`[AI Engine] Analysis complete for ${report.id}. Confidence: ${aiResult.confidence}`);
+    console.log(`[AI Engine] Analysis complete for ${report.id}. Confidence: ${aiResult.confidence}, verdict: ${aiResult.verdict}`);
     await runDecisionEngine(report, aiResult, broadcastCallback);
   } catch (error) {
     console.error(`[AI Engine] Failed to analyze report ${report.id}:`, error);
 
-    // Citizen explicitly chose Accident / Fire → still alert Signal-Aid
-    const requiredVehicle = resolveEmergencyVehicle(report.type, null);
-    if (requiredVehicle) {
-      console.log(`[AI Engine] Fallback: trusting user type "${report.type}" → ${requiredVehicle}`);
-      await runDecisionEngine(report, {
-        detectedType: requiredVehicle === 'fire' ? 'FIRE' : 'ACCIDENT',
-        severity: 'HIGH',
-        confidence: 0.9,
-        peoplePossiblyInjured: requiredVehicle === 'ambulance',
-        roadBlocked: true,
-        emergencyResponseRecommended: true,
-        reason: 'AI unavailable — dispatching from citizen emergency category.'
-      }, broadcastCallback);
-      return;
-    }
-
-    // Non-emergency: still show on Roadly map
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'ACTIVE' WHERE id = ?", [report.id]);
-    broadcastCallback('report_updated', { ...report, lifecycle_state: 'ACTIVE' });
-    broadcastCallback('new_incident', { ...report, lifecycle_state: 'ACTIVE' });
+    // Spec: do NOT pretend unverified incidents are genuine when AI is unavailable.
+    // Route to human review so an admin can verify or reject.
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'HUMAN_REVIEW', status = 'pending' WHERE id = ?", [report.id]);
+    broadcastCallback('report_updated', { ...report, lifecycle_state: 'HUMAN_REVIEW', status: 'pending' });
   }
 }
 
 /**
- * Validates the AI results and determines if an emergency dispatch should be created.
- * ONLY Accident → ambulance and Fire → fire create Signal-Aid jobs.
+ * Spec decision engine:
+ * PENDING_VERIFICATION -> VERIFIED (broadcast) | HUMAN_REVIEW | REJECTED
+ * Only VERIFIED accident/fire create Signal-Aid dispatches.
+ * AI must not invent evidence: low/unclear evidence goes to human review.
  */
 async function runDecisionEngine(report, aiResult, broadcastCallback) {
   console.log(`[Decision Engine] Evaluating report ${report.id}...`);
 
-  const CONFIDENCE_THRESHOLD = 0.70;
+  const confidence = Number(aiResult.confidence ?? 0);
+  const verdict = String(aiResult.verdict || 'insufficient evidence').toLowerCase();
   const userType = normalizeUserType(report.type);
-  const isExplicitEmergency = userType === 'accident' || userType === 'fire';
 
-  // Explicit Accident/Fire from citizen always dispatches (planned behavior).
-  // Other types need AI confidence + ACCIDENT/FIRE detection.
-  if (!isExplicitEmergency && (aiResult.confidence || 0) < CONFIDENCE_THRESHOLD) {
-    console.log(`[Decision Engine] Low confidence (${aiResult.confidence}). Flagging for review.`);
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'NEEDS_REVIEW' WHERE id = ?", [report.id]);
-    broadcastCallback('report_updated', { ...report, lifecycle_state: 'NEEDS_REVIEW' });
+  // Clearly invalid evidence -> REJECTED (do not broadcast as emergency).
+  if (verdict.includes('invalid') || confidence < 0.40) {
+    console.log(`[Decision Engine] Rejecting ${report.id}: verdict=${verdict}, confidence=${confidence}`);
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'REJECTED', status = 'rejected' WHERE id = ?", [report.id]);
+    broadcastCallback('report_updated', { ...report, lifecycle_state: 'REJECTED', status: 'rejected' });
     return;
   }
+
+  // Unclear evidence -> HUMAN_REVIEW (admin verifies or rejects).
+  if (verdict.includes('insufficient') || confidence < 0.70) {
+    console.log(`[Decision Engine] Human review ${report.id}: verdict=${verdict}, confidence=${confidence}`);
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'HUMAN_REVIEW', status = 'pending' WHERE id = ?", [report.id]);
+    broadcastCallback('report_updated', { ...report, lifecycle_state: 'HUMAN_REVIEW', status: 'pending' });
+    return;
+  }
+
+  // Genuine emergency with sufficient confidence -> VERIFIED (broadcast verified alert).
+  console.log(`[Decision Engine] Verified ${report.id}: type=${userType}, detected=${aiResult.detectedType}, confidence=${confidence}`);
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'VERIFIED', status = 'verified' WHERE id = ?", [report.id]);
+  const verifiedReport = { ...report, lifecycle_state: 'VERIFIED', status: 'verified' };
+  broadcastCallback('report_updated', verifiedReport);
+  broadcastCallback('new_incident', verifiedReport);
 
   const requiredVehicle = resolveEmergencyVehicle(report.type, aiResult.detectedType);
 
   if (requiredVehicle) {
     console.log(`[Decision Engine] Verified Emergency! Creating ${requiredVehicle} dispatch.`);
-
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'VERIFIED', status = 'verified' WHERE id = ?", [report.id]);
 
     const existing = await dbGet('SELECT id FROM dispatches WHERE report_id = ?', [report.id]);
     let dispatchId = existing?.id;
@@ -170,21 +171,19 @@ async function runDecisionEngine(report, aiResult, broadcastCallback) {
       );
     }
 
+    // Spec flow: VERIFIED -> DISPATCHED once the emergency request exists.
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'verified' WHERE id = ?", [report.id]);
+
     const fullDispatch = await dbGet(`
       SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url
-      FROM dispatches d 
-      JOIN road_reports r ON d.report_id = r.id 
+      FROM dispatches d
+      JOIN road_reports r ON d.report_id = r.id
       WHERE d.id = ?`, [dispatchId]
     );
 
-    broadcastCallback('report_updated', { ...report, lifecycle_state: 'VERIFIED', status: 'verified' });
-    broadcastCallback('new_incident', { ...report, lifecycle_state: 'VERIFIED', status: 'verified' });
+    const dispatchedReport = { ...report, lifecycle_state: 'DISPATCHED', status: 'verified' };
+    broadcastCallback('report_updated', dispatchedReport);
     broadcastCallback('dispatch.created', fullDispatch);
-  } else {
-    console.log(`[Decision Engine] Standard incident (no Signal-Aid dispatch). Marking active.`);
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'ACTIVE' WHERE id = ?", [report.id]);
-    broadcastCallback('report_updated', { ...report, lifecycle_state: 'ACTIVE' });
-    broadcastCallback('new_incident', { ...report, lifecycle_state: 'ACTIVE' });
   }
 }
 
