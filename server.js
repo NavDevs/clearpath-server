@@ -370,6 +370,11 @@ const REPORT_TTL_HOURS = {
   accident: 2, congestion: 3, blocked: 4, flooding: 6, pothole: 48, default: 4
 };
 
+function toMs(createdAt) {
+  const d = new Date(createdAt);
+  return d.getTime();
+}
+
 async function runExpiryEngine() {
   // Step 1: Move old ACTIVE reports to RECHECK
   const activeReports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE lifecycle_state = 'ACTIVE' OR lifecycle_state = 'VERIFIED'");
@@ -378,7 +383,7 @@ async function runExpiryEngine() {
   
   for (const r of activeReports) {
     const ttl = RECHECK_TTL_HOURS[r.type] || RECHECK_TTL_HOURS.default;
-    const ageHrs = (now - new Date(r.created_at + (r.created_at.includes('Z') ? '' : 'Z')).getTime()) / 3600000;
+    const ageHrs = (now - toMs(r.created_at)) / 3600000;
     if (ageHrs >= ttl) {
       await dbRun("UPDATE road_reports SET lifecycle_state = 'RECHECK', status = 'pending' WHERE id = ?", [r.id]);
       console.log(`[ClearPath] Recheck flagged: ${r.type} (${ageHrs.toFixed(1)}h old)`);
@@ -388,7 +393,7 @@ async function runExpiryEngine() {
   // Step 2: Auto-resolve old RECHECK reports (after 30 more min)
   const recheckReports = await dbAll("SELECT id, type, created_at FROM road_reports WHERE lifecycle_state = 'RECHECK'");
   for (const r of recheckReports) {
-    const ageHrs = (now - new Date(r.created_at + (r.created_at.includes('Z') ? '' : 'Z')).getTime()) / 3600000;
+    const ageHrs = (now - toMs(r.created_at)) / 3600000;
     const ttl = (RECHECK_TTL_HOURS[r.type] || RECHECK_TTL_HOURS.default) + 0.5;
     if (ageHrs >= ttl) {
       await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
