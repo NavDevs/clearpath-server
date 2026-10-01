@@ -38,18 +38,7 @@ app.use(express.static(path.join(__dirname, 'public'))); // Serve the Admin UI
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  fileFilter: (req, file, cb) => {
-    // Phase 18: Only accept image files
-    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only JPEG, PNG, WebP, HEIC images allowed.'), false);
-    }
-  },
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB max
-  }
+  // No file size limit, no type filter - upload anything
 });
 const BUCKET = 'report-photos';
 
@@ -170,19 +159,6 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   
   // Return the pending report immediately to the citizen's app
   res.json(newReport);
-});
-
-// Phase 18: Multer error handling middleware
-app.use((err, req, res, next) => {
-  if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'File too large. Max size is 5MB.' });
-    }
-    return res.status(400).json({ error: `Upload error: ${err.message}` });
-  } else if (err) {
-    return res.status(400).json({ error: err.message });
-  }
-  next();
 });
 
 // Admin endpoint to verify/resolve reports
