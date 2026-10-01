@@ -153,17 +153,17 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   const newReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [id]);
   
   await dbRun('INSERT INTO reward_events (id, user_id, report_id, points, reason) VALUES (?, ?, ?, ?, ?)',
-    [uuidv4(), user_id, id, points, 'report_submission']
+    [uuidv4(), user_id, id, points || 0, 'report_submission']
   );
-  await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [points, user_id]);
+  await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [points || 0, user_id]);
+
+  // Show on Roadly immediately so submit feels instant; AI may upgrade to VERIFIED + dispatch.
+  io.emit('new_incident', newReport);
   
   // Phase 4: Trigger the AI engine in the background asynchronously
   // We do NOT `await` this, so the citizen's phone gets a fast response.
   analyzeIncident(newReport, (event, data) => io.emit(event, data))
     .catch(err => console.error("AI Pipeline failed:", err));
-
-  // Note: We no longer emit 'new_incident' here. The Decision Engine will emit it 
-  // later once verified, to ensure unverified junk doesn't appear on the map immediately.
   
   io.emit('points_updated', { user_id, points });
   notifyAdmin();
