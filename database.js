@@ -153,6 +153,12 @@ async function ensureSqliteSchema(db) {
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  // Server-side metadata that survives data wipes (the reset action must NOT
+  // clear it): the data epoch tells every app the server was wiped so they can
+  // drop their cached sessions and local data.
+  await migrate(`CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  await migrate(`INSERT OR IGNORE INTO system_meta (key, value) VALUES ('data_epoch', '1')`);
+
   // Older files baked in CHECK(status IN ('pending','verified','resolved')), which
   // rejects the REJECTED lifecycle. SQLite cannot drop a CHECK, so rebuild the table.
   const roadReports = await get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'road_reports'");
@@ -302,6 +308,11 @@ async function initDb() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`);
 
+    // Server-side metadata that survives data wipes: the data epoch tells every
+    // app the server was wiped so they can drop cached sessions and local data.
+    await client.query(`CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    await client.query(`INSERT INTO system_meta (key, value) VALUES ('data_epoch', '1') ON CONFLICT (key) DO NOTHING`);
+
     client.release();
     console.log('Postgres Database Initialized (ClearPath v2 Schema).');
     return;
@@ -357,7 +368,8 @@ const dbAll = async (sql, params = []) => {
  *
  * Admin credentials are environment-based, so wiping `users` does not lock anyone
  * out of the dashboard. Order below is child-before-parent for SQLite, which does
- * not support TRUNCATE ... CASCADE.
+ * not support TRUNCATE ... CASCADE. `system_meta` is intentionally NOT in this
+ * list — the data epoch must survive resets so apps can detect them.
  */
 const RESET_TABLES = [
   'dispatches',
@@ -367,6 +379,30 @@ const RESET_TABLES = [
   'road_reports',
   'users'
 ];
+
+/**
+ * The data epoch: a counter that increments on every full data reset.
+ * Exposed via /health; the mobile apps compare it with the value they saw at
+ * last boot and wipe their local session/cache when it changed.
+ */
+async function getDataEpoch() {
+  try {
+    const row = await dbGet("SELECT value FROM system_meta WHERE key = 'data_epoch'");
+    return row && row.value != null ? String(row.value) : '1';
+  } catch (e) {
+    return '1';
+  }
+}
+
+async function bumpDataEpoch() {
+  const next = String((parseInt(await getDataEpoch(), 10) || 1) + 1);
+  await dbRun(
+    "INSERT INTO system_meta (key, value) VALUES ('data_epoch', ?) " +
+      'ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+    [next]
+  );
+  return next;
+}
 
 async function resetAllData() {
   if (useSqlite) {
@@ -381,4 +417,13 @@ async function resetAllData() {
   return { engine: 'postgres', tables: RESET_TABLES };
 }
 
-module.exports = { db: useSqlite ? sqliteDb : pool, dbRun, dbGet, dbAll, initPromise, resetAllData };
+module.exports = {
+  db: useSqlite ? sqliteDb : pool,
+  dbRun,
+  dbGet,
+  dbAll,
+  initPromise,
+  resetAllData,
+  getDataEpoch,
+  bumpDataEpoch
+};

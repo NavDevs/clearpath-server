@@ -974,7 +974,8 @@ document.querySelectorAll('.sidebar-link').forEach((link) => {
 async function resetAllDemoData() {
     const answer = prompt(
         'This permanently deletes ALL incidents, trips, dispatches, driver requests, users\n' +
-        'and uploaded photos.\n\n' +
+        'and uploaded photos. The Roadly and Signal-Aid apps will sign everyone out and\n' +
+        'clear their local data on their next contact with the server.\n\n' +
         'Type RESET to confirm:'
     );
     if (answer === null) return;
@@ -1013,39 +1014,46 @@ $('refresh-btn').addEventListener('click', async () => {
 async function refreshAll() {
     if (!token()) return;
     const [reports, approvals, drivers, incidents, dispatches, trips, users, stats] = await Promise.all([
-        api('/api/reports').catch(() => []),
-        api('/api/admin/driver-requests').catch(() => []),
-        api('/api/admin/drivers').catch(() => []),
-        api('/api/admin/incidents').catch(() => []),
-        api('/api/admin/dispatches').catch(() => []),
-        api('/api/admin/trips').catch(() => []),
-        api('/api/admin/users').catch(() => []),
-        api('/api/admin/stats').catch(() => null)
+        api('/api/reports').catch(() => state.reports),
+        api('/api/admin/driver-requests').catch(() => state.approvals),
+        api('/api/admin/drivers').catch(() => state.drivers),
+        api('/api/admin/incidents').catch(() => state.incidents),
+        api('/api/admin/dispatches').catch(() => state.dispatches),
+        api('/api/admin/trips').catch(() => state.trips),
+        api('/api/admin/users').catch(() => state.users),
+        api('/api/admin/stats').catch(() => state.stats)
     ]);
 
-    state.reports = Array.isArray(reports) ? reports : [];
-    state.approvals = Array.isArray(approvals) ? approvals : [];
-    state.drivers = Array.isArray(drivers) ? drivers : [];
-    state.incidents = Array.isArray(incidents) ? incidents : [];
-    state.dispatches = Array.isArray(dispatches) ? dispatches : [];
-    state.trips = Array.isArray(trips) ? trips : [];
-    state.users = Array.isArray(users) ? users : [];
-    state.stats = stats;
+    // A failed request keeps the last good data instead of wiping the table —
+    // Render cold starts (the keep-alive cron wakes the service) can make one
+    // endpoint time out while the others answer, and an empty table after a
+    // successful load looks like data loss.
+    state.reports = Array.isArray(reports) ? reports : state.reports;
+    state.approvals = Array.isArray(approvals) ? approvals : state.approvals;
+    state.drivers = Array.isArray(drivers) ? drivers : state.drivers;
+    state.incidents = Array.isArray(incidents) ? incidents : state.incidents;
+    state.dispatches = Array.isArray(dispatches) ? dispatches : state.dispatches;
+    state.trips = Array.isArray(trips) ? trips : state.trips;
+    state.users = Array.isArray(users) ? users : state.users;
+    state.stats = stats || state.stats;
 
-    renderStats();
-    renderApprovals();
-    renderIncidents();
-    renderReview();
-    renderVehicles();
-    renderDispatches();
-    renderTrips();
-    renderUsers();
-    renderCounts();
+    // A single broken renderer must never freeze the whole dashboard again:
+    // each render runs on its own so one failure can't abort the rest.
+    const safe = (fn, name) => {
+        try { fn(); } catch (err) { console.error('[Dashboard] render ' + name + ' failed:', err); }
+    };
+    safe(renderStats, 'stats');
+    safe(renderApprovals, 'approvals');
+    safe(renderIncidents, 'incidents');
+    safe(renderVehicles, 'vehicles');
+    safe(renderDispatches, 'dispatches');
+    safe(renderTrips, 'trips');
+    safe(renderUsers, 'users');
+    safe(renderCounts, 'counts');
 }
 
 function renderCounts() {
     const pendingApprovals = state.approvals.filter((r) => r.status === 'pending').length;
-    const reviewQueue = state.incidents.filter(isReviewable);
     const activeTrips = state.trips.filter((t) => ['en_route', 'arrived'].includes(String(t.status || '')));
 
     setCount('nav-approvals', pendingApprovals, pendingApprovals > 0);

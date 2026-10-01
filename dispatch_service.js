@@ -34,10 +34,19 @@ async function createDispatch(report, requiredVehicle, broadcastCallback) {
   if (!requiredVehicle) return null;
   console.log(`[Dispatch] Creating ${requiredVehicle} dispatch for ${report.id}.`);
 
-  const existing = await dbGet('SELECT id FROM dispatches WHERE report_id = ?', [report.id]);
+  const existing = await dbGet('SELECT id, status FROM dispatches WHERE report_id = ?', [report.id]);
   let dispatchId = existing?.id;
 
-  if (!dispatchId) {
+  if (existing && (existing.status === 'cancelled' || existing.status === 'completed')) {
+    // The only dispatch for this incident is dead — revive it instead of
+    // leaving a DISPATCHED report nothing can be claimed from. (An 'accepted'
+    // dispatch is a driver mid-response and is left alone.)
+    await dbRun(
+      "UPDATE dispatches SET status = 'available', driver_id = NULL, required_vehicle = ?, updated_at = ? WHERE id = ?",
+      [requiredVehicle, new Date().toISOString(), existing.id]
+    );
+    dispatchId = existing.id;
+  } else if (!dispatchId) {
     dispatchId = uuidv4();
     await dbRun(
       `INSERT INTO dispatches (id, report_id, required_vehicle, status) VALUES (?, ?, ?, 'available')`,

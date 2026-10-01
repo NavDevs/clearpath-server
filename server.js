@@ -32,7 +32,7 @@ const { randomUUID: uuidv4 } = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
-const { dbRun, dbGet, dbAll, initPromise } = require('./database');
+const { dbRun, dbGet, dbAll, initPromise, getDataEpoch, bumpDataEpoch } = require('./database');
 const { resetAllDataAndPhotos } = require('./maintenance');
 
 // Photo storage is optional. The Command Server must always boot and serve the
@@ -337,6 +337,9 @@ app.patch('/api/driver/availability', authMiddleware, requireApprovedDriver, asy
     return res.status(400).json({ error: 'Invalid availability' });
   }
   await dbRun('UPDATE users SET availability = ? WHERE id = ?', [availability, req.user.id]);
+  // Leaving BUSY hands any in-progress response back to the pool instead of
+  // leaving a ghost trip and a claimed dispatch behind.
+  if (availability !== 'BUSY') await releaseDriverWork(req.user.id, 'driver_self_change');
   const user = await dbGet('SELECT id, availability, driver_id, vehicle_no FROM users WHERE id = ?', [req.user.id]);
   io.emit('driver.availability_updated', user);
   res.json(user);
@@ -516,12 +519,10 @@ app.patch('/api/admin/incidents/:id/status', authMiddleware, requireRole('admin'
   if (lifecycle_state) {
     await dbRun('UPDATE road_reports SET lifecycle_state = ? WHERE id = ?', [lifecycle_state, req.params.id]);
   }
-  if (lifecycle_state === 'RESOLVED') {
-    const stale = await dbAll("SELECT id FROM dispatches WHERE report_id = ? AND status = 'available'", [req.params.id]);
-    for (const d of stale) {
-      await dbRun("UPDATE dispatches SET status = 'cancelled' WHERE id = ?", [d.id]);
-      io.emit('dispatch.cancelled', { dispatchId: d.id, report_id: req.params.id, reason: 'resolved' });
-    }
+  if (lifecycle_state === 'RESOLVED' || status === 'resolved') {
+    // Incident is done: retire unclaimed dispatches AND release any driver
+    // still responding, so stats/trips/dispatch lists stay consistent.
+    await cancelOpenDispatches(req.params.id, 'resolved');
   }
   const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
   io.emit('report_updated', withExpiry(updated));
@@ -546,9 +547,16 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
   const requiredVehicle = norm === 'fire' ? 'fire' : norm === 'accident' ? 'ambulance' : null;
   let fullDispatch = null;
   if (requiredVehicle) {
-    const existing = await dbGet('SELECT id FROM dispatches WHERE report_id = ?', [req.params.id]);
+    const existing = await dbGet('SELECT id, status FROM dispatches WHERE report_id = ?', [req.params.id]);
     let dispatchId = existing?.id;
-    if (!dispatchId) {
+    if (dispatchId) {
+      // A cancelled/completed dispatch is dead — revive it, otherwise the
+      // incident sits in DISPATCHED with nothing for drivers to claim.
+      await dbRun(
+        "UPDATE dispatches SET status = 'available', driver_id = NULL, required_vehicle = ?, updated_at = ? WHERE id = ? AND status IN ('cancelled','completed')",
+        [requiredVehicle, new Date().toISOString(), dispatchId]
+      );
+    } else {
       dispatchId = uuidv4();
       await dbRun(
         `INSERT INTO dispatches (id, report_id, required_vehicle, status) VALUES (?, ?, ?, 'available')`,
@@ -572,13 +580,61 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
   res.json({ report: updatedReport, dispatch: fullDispatch });
 });
 
-// Retire any still-unclaimed dispatch for a report so drivers stop seeing it
-// after the admin resolves or rejects the incident.
+// Close every dispatch for a report — unclaimed AND claimed — so nothing stays
+// 'available' after the incident is done and no driver/trip is left BUSY or
+// en_route on a resolved or rejected incident.
 async function cancelOpenDispatches(reportId, reason) {
-  const stale = await dbAll("SELECT id FROM dispatches WHERE report_id = ? AND status = 'available'", [reportId]);
-  for (const d of stale) {
-    await dbRun("UPDATE dispatches SET status = 'cancelled' WHERE id = ?", [d.id]);
+  const open = await dbAll(
+    "SELECT id, driver_id FROM dispatches WHERE report_id = ? AND status IN ('available', 'accepted')",
+    [reportId]
+  );
+  for (const d of open) {
+    if (d.driver_id) {
+      // The response is over: free the driver and close their in-progress trip.
+      await dbRun('UPDATE users SET availability = ? WHERE id = ?', ['AVAILABLE', d.driver_id]);
+      await dbRun(
+        "UPDATE emergency_trips SET status = 'completed' WHERE dispatch_id = ? AND status IN ('en_route','arrived')",
+        [d.id]
+      );
+      io.emit('driver.availability_updated', { id: d.driver_id, availability: 'AVAILABLE' });
+    }
+    await dbRun('UPDATE dispatches SET status = ?, driver_id = ?, updated_at = ? WHERE id = ?',
+      ['cancelled', null, new Date().toISOString(), d.id]);
     io.emit('dispatch.cancelled', { dispatchId: d.id, report_id: reportId, reason });
+  }
+}
+
+// A driver leaving BUSY (logout, dashboard toggle) must not keep an emergency
+// attached to them: close their trip and hand the dispatch back to the pool so
+// another driver can claim it immediately.
+async function releaseDriverWork(userId, reason = 'driver_unavailable') {
+  const trips = await dbAll(
+    "SELECT id, dispatch_id FROM emergency_trips WHERE driver_id = ? AND status IN ('en_route','arrived')",
+    [userId]
+  );
+  for (const t of trips) {
+    await dbRun("UPDATE emergency_trips SET status = 'completed' WHERE id = ?", [t.id]);
+    if (t.dispatch_id) {
+      const dispatch = await dbGet('SELECT id, report_id FROM dispatches WHERE id = ?', [t.dispatch_id]);
+      if (dispatch) {
+        await dbRun(
+          "UPDATE dispatches SET status = 'available', driver_id = NULL, updated_at = ? WHERE id = ? AND status = 'accepted'",
+          [new Date().toISOString(), dispatch.id]
+        );
+        if (dispatch.report_id) {
+          await dbRun(
+            "UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'pending' WHERE id = ? AND lifecycle_state IN ('ACCEPTED','EN_ROUTE','ARRIVED')",
+            [dispatch.report_id]
+          );
+          const report = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
+          if (report) io.emit('report_updated', report);
+        }
+        const payload = await getDispatchPayload(dispatch.id);
+        if (payload) io.emit('dispatch.created', payload);
+      }
+    }
+    io.emit('trip.completed', { id: t.id });
+    console.log(`[ClearPath] Released trip ${t.id} (${reason})`);
   }
 }
 
@@ -616,8 +672,11 @@ app.post('/api/admin/reset-data', authMiddleware, requireRole('admin'), async (r
 
   try {
     const summary = await resetAllDataAndPhotos(supabase);
+    // Bump the epoch AFTER the wipe: both apps compare it with the value they
+    // saw at boot and clear their sessions / local caches when it changed.
+    summary.dataEpoch = await bumpDataEpoch();
     console.log('[ClearPath] Data reset:', JSON.stringify(summary));
-    io.emit('data_reset');
+    io.emit('data_reset', { dataEpoch: summary.dataEpoch });
     notifyAdmin();
     res.json(summary);
   } catch (err) {
@@ -661,7 +720,7 @@ app.get('/api/reports', async (req, res) => {
   res.json(reports.map(withExpiry));
 });
 
-const { createDispatch, isCriticalEmergency, resolveEmergencyVehicle } = require('./dispatch_service');
+const { createDispatch, isCriticalEmergency, resolveEmergencyVehicle, getDispatchPayload } = require('./dispatch_service');
 
 // Issue-type resolution durations (hours). Preserves the configured values
 // shown on the dashboard: accident 2h, fire 1h, congestion 3h, blocked 4h,
@@ -1018,6 +1077,9 @@ app.patch('/api/users/:id/availability', authMiddleware, requireRole('admin'), a
   const { availability } = req.body;
   if (!['OFFLINE','AVAILABLE','BUSY'].includes(availability)) return res.status(400).json({ error: 'Invalid availability' });
   await dbRun('UPDATE users SET availability = ? WHERE id = ?', [availability, req.params.id]);
+  // Same rule as the driver-facing route: pulling a driver off BUSY must also
+  // release the emergency they were responding to (no ghost trips on screen).
+  if (availability !== 'BUSY') await releaseDriverWork(req.params.id, 'admin_availability_change');
   const user = await dbGet('SELECT id, availability, driver_id, vehicle_no FROM users WHERE id = ?', [req.params.id]);
   io.emit('driver.availability_updated', user);
   notifyAdmin();
@@ -1173,8 +1235,11 @@ app.get('/api/trips/active/:driver_id', async (req, res) => {
 // Runs every 2 minutes so issues vanish on time even if every app is closed.
 // An issue stays visible until its duration expires; the backend — never the
 // frontend — marks it RESOLVED. Incidents a driver is actively handling
-// (ACCEPTED / EN_ROUTE / ARRIVED) are never pulled out from under them.
+// (ACCEPTED / EN_ROUTE / ARRIVED) are never pulled out from under them... but a
+// response that was never finished (app force-closed, session lost) must not
+// stay BUSY/en_route forever either — after this grace it is force-closed.
 const HANDLED_STATES = ['ACCEPTED', 'EN_ROUTE', 'ARRIVED'];
+const HANDLED_FORCE_GRACE_HRS = 2;
 
 async function runExpiryEngine() {
   const open = await dbAll(
@@ -1183,18 +1248,29 @@ async function runExpiryEngine() {
   const now = Date.now();
   for (const r of open) {
     const ageHrs = (now - toMs(r.created_at)) / 3600000;
-    if (ageHrs < durationHoursFor(r.type)) continue;
-    if (HANDLED_STATES.includes(r.lifecycle_state)) continue;
+    const ttlHrs = durationHoursFor(r.type);
+
+    if (HANDLED_STATES.includes(r.lifecycle_state)) {
+      // A driver is (or was) responding. Let them finish — unless the response
+      // was abandoned past the grace window, which would leave the driver BUSY,
+      // the trip open and the report stuck in a handled state forever.
+      if (ageHrs < ttlHrs + HANDLED_FORCE_GRACE_HRS) continue;
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
+      // Completes the open trip, frees the driver and cancels the dispatch.
+      await cancelOpenDispatches(r.id, 'expired');
+      const forced = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
+      if (forced) io.emit('report_updated', withExpiry(forced));
+      console.log(`[ClearPath] Force-closed abandoned ${r.type} (${ageHrs.toFixed(1)}h old, was ${r.lifecycle_state})`);
+      continue;
+    }
+
+    if (ageHrs < ttlHrs) continue;
 
     await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
 
     // A still-unclaimed emergency request dies with its incident so drivers
     // stop seeing it; claimed ones already moved past 'available'.
-    const stale = await dbAll("SELECT id FROM dispatches WHERE report_id = ? AND status = 'available'", [r.id]);
-    for (const d of stale) {
-      await dbRun("UPDATE dispatches SET status = 'cancelled' WHERE id = ?", [d.id]);
-      io.emit('dispatch.cancelled', { dispatchId: d.id, report_id: r.id, reason: 'expired' });
-    }
+    await cancelOpenDispatches(r.id, 'expired');
 
     const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
     io.emit('report_updated', withExpiry(updated));
@@ -1208,7 +1284,7 @@ async function runExpiryEngine() {
 async function runDispatchSweeper() {
   const stale = await dbAll(
     `SELECT r.* FROM road_reports r
-     LEFT JOIN dispatches d ON d.report_id = r.id
+     LEFT JOIN dispatches d ON d.report_id = r.id AND d.status NOT IN ('cancelled', 'completed')
      WHERE r.type IN ('accident', 'fire')
        AND r.lifecycle_state IN ('ACTIVE', 'PENDING_VERIFICATION', 'HUMAN_REVIEW')
        AND d.id IS NULL`
@@ -1233,8 +1309,15 @@ const runSweepsSafely = () =>
 initPromise.then(() => { runSweepsSafely(); setInterval(runSweepsSafely, 2 * 60 * 1000); });
 
 // â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', name: 'ClearPath Command Server', uptime: process.uptime() });
+// Health check (for keep-alive pings). `dataEpoch` increments on every full
+// data reset so the mobile apps can detect a wipe and clear their local data.
+app.get('/health', async (req, res) => {
+  res.json({
+    status: 'ok',
+    name: 'ClearPath Command Server',
+    uptime: process.uptime(),
+    dataEpoch: await getDataEpoch()
+  });
 });
 
 const PORT = process.env.PORT || 3000;
