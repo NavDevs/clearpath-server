@@ -280,6 +280,8 @@
         .badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
         .badge-pending { background: var(--warn-bg); color: var(--warn); }
         .badge-verified { background: var(--success-bg); color: var(--success); }
+        .badge-approved { background: var(--success-bg); color: var(--success); }
+        .badge-rejected { background: var(--danger-bg); color: var(--danger); }
         .badge-resolved { background: var(--info-bg); color: var(--info); }
         .badge-critical { background: var(--danger-bg); color: var(--danger); }
         .badge-high { background: var(--warn-bg); color: var(--warn); }
@@ -498,7 +500,8 @@
         tbody tr:hover { background: rgba(85,216,255,0.035); }
         .empty-row td { color: #7487a1; }
         .badge-pending, .badge-high { background: var(--warn-bg); color: var(--warn); }
-        .badge-verified, .badge-low { background: var(--success-bg); color: var(--success); }
+        .badge-verified, .badge-low, .badge-approved { background: var(--success-bg); color: var(--success); }
+        .badge-rejected { background: var(--danger-bg); color: var(--danger); }
         .badge-resolved, .badge-medium { background: var(--info-bg); color: var(--info); }
         .badge-critical { background: var(--danger-bg); color: var(--danger); }
         .badge-citizen { background: rgba(143,163,190,0.12); color: #afbdd0; }
@@ -623,6 +626,9 @@
             <div class="sidebar-link" onclick="showSection('trips',this)">
                 <span class="icon">🚑</span> Signal-Aid <span class="count" id="nav-trips">0</span>
             </div>
+            <div class="sidebar-link" onclick="showSection('approvals',this)">
+                <span class="icon">✅</span> Driver Approvals <span class="count" id="nav-approvals">0</span>
+            </div>
             <div class="sidebar-link" onclick="showSection('users',this)">
                 <span class="icon">👥</span> Users <span class="count" id="nav-users">0</span>
             </div>
@@ -699,6 +705,20 @@
             </div>
         </div>
 
+        <!-- Driver Approvals (Signal-Aid) -->
+        <div class="section fade-in" id="approvals-section">
+            <div class="section-header">
+                <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Driver Approvals · Signal-Aid</span></div>
+                <span class="section-count" id="approvals-count"></span>
+            </div>
+            <div class="card"><div class="card-inner">
+                <table>
+                    <thead><tr><th>Driver</th><th>Vehicle</th><th>Organization</th><th>Status</th><th>Decision</th></tr></thead>
+                    <tbody id="approvals-tbody"><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody>
+                </table>
+            </div></div>
+        </div>
+
         <!-- Reports -->
         <div class="section fade-in" id="reports-section">
             <div class="section-header">
@@ -758,6 +778,24 @@
     const ADMIN_USERNAME = 'admin';
     const ADMIN_PASSWORD = 'clearpath123';
     const SESSION_KEY = 'clearpath_admin_session';
+    const TOKEN_KEY = 'clearpath_admin_token';
+
+    async function ensureAdminToken(username, password) {
+        try {
+            const res = await fetch('/api/auth/admin/login', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (data.token) localStorage.setItem(TOKEN_KEY, data.token);
+            return data.token || null;
+        } catch (e) { return null; }
+    }
+    function adminHeaders() {
+        const t = localStorage.getItem(TOKEN_KEY) || '';
+        return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t };
+    }
 
     const appShell = document.getElementById('app-shell');
     const loginScreen = document.getElementById('login-screen');
@@ -780,12 +818,13 @@
         }
     }
 
-    loginForm.addEventListener('submit', (event) => {
+    loginForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         const username = document.getElementById('login-username').value.trim();
         const password = document.getElementById('login-password').value;
 
         if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+            await ensureAdminToken(username, password);
             setAuthState(true);
             return;
         }
@@ -793,7 +832,7 @@
         loginMessage.textContent = 'Invalid username or password.';
     });
 
-    logoutBtn.addEventListener('click', () => setAuthState(false));
+    logoutBtn.addEventListener('click', () => { localStorage.removeItem(TOKEN_KEY); setAuthState(false); });
 
     socket.on('admin_refresh', function() {
         if (localStorage.getItem(SESSION_KEY) === 'true') fetchData();
@@ -815,6 +854,7 @@
     function showSection(section, el) {
         const stats = document.querySelector('.stats-grid');
         const repSec = document.getElementById('reports-section');
+        const apprSec = document.getElementById('approvals-section');
         const twoCol = document.querySelector('.two-col');
         const tripSec = document.getElementById('trips-section');
         const userSec = document.getElementById('users-section');
@@ -825,12 +865,14 @@
         if (section === 'all') {
             stats.style.display = 'grid';
             repSec.style.display = 'block';
+            apprSec.style.display = 'block';
             twoCol.style.display = 'grid';
             tripSec.style.display = 'block';
             userSec.style.display = 'block';
         } else {
             stats.style.display = 'none';
             repSec.style.display = section === 'reports' ? 'block' : 'none';
+            apprSec.style.display = section === 'approvals' ? 'block' : 'none';
             if (section === 'trips' || section === 'users') {
                 twoCol.style.display = 'grid';
                 tripSec.style.display = section === 'trips' ? 'block' : 'none';
@@ -860,6 +902,60 @@
         document.getElementById('nav-reports').textContent = reports.length;
         document.getElementById('nav-trips').textContent = trips.length;
         document.getElementById('nav-users').textContent = users.length;
+
+        fetchApprovals();
+    }
+
+    async function fetchApprovals() {
+        const tbody = document.getElementById('approvals-tbody');
+        try {
+            const res = await fetch('/api/admin/driver-requests', { headers: adminHeaders() });
+            if (!res.ok) {
+                tbody.innerHTML = '<tr class="empty-row"><td colspan="5">Admin token missing — logout and login again.</td></tr>';
+                return;
+            }
+            const rows = await res.json();
+            renderApprovals(Array.isArray(rows) ? rows : []);
+        } catch (e) {
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="5">Could not load approval requests.</td></tr>';
+        }
+    }
+
+    function renderApprovals(rows) {
+        const tbody = document.getElementById('approvals-tbody');
+        const pending = rows.filter(r => r.status === 'pending');
+        document.getElementById('approvals-count').textContent = pending.length + ' pending';
+        document.getElementById('nav-approvals').textContent = pending.length;
+        if (!rows.length) { tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No Signal-Aid driver requests yet.</td></tr>'; return; }
+        tbody.innerHTML = '';
+        rows.forEach(r => {
+            const tr = document.createElement('tr');
+            const vehicle = (r.vehicle_no || '') + (r.vehicle_type ? ' · ' + r.vehicle_type : '');
+            const action = r.status === 'pending'
+                ? '<button class="status-select" onclick="approveDriver(\''+r.id+'\')">Approve</button> ' +
+                  '<button class="status-select" onclick="rejectDriver(\''+r.id+'\')">Reject</button>'
+                : '<span class="badge badge-'+r.status+'">'+r.status+'</span>';
+            tr.innerHTML =
+                '<td><strong>'+(r.name||'—')+'</strong><br><span style="color:var(--muted-fg);font-size:11px">'+(r.driver_id||'')+' · '+(r.phone||'')+'</span></td>'+
+                '<td style="font-size:12px">'+vehicle+'</td>'+
+                '<td style="font-size:12px">'+(r.organization||'—')+'</td>'+
+                '<td><span class="badge badge-'+r.status+'">'+r.status+'</span></td>'+
+                '<td>'+action+'</td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function approveDriver(id) {
+        await fetch('/api/admin/driver-requests/'+id+'/approve', { method: 'POST', headers: adminHeaders() });
+        fetchApprovals();
+    }
+
+    async function rejectDriver(id) {
+        const reason = prompt('Rejection reason (shown to driver):') || 'Not eligible';
+        await fetch('/api/admin/driver-requests/'+id+'/reject', {
+            method: 'POST', headers: adminHeaders(), body: JSON.stringify({ rejection_reason: reason })
+        });
+        fetchApprovals();
     }
 
     function renderReports(reports) {
