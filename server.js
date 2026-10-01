@@ -92,6 +92,16 @@ io.on('connection', (socket) => {
 // Broadcast helper for Admin UI
 const notifyAdmin = () => io.emit('admin_refresh');
 
+// Resolve a driver reference that may be a users.id UUID or a human driver_id code.
+async function resolveDriver(ref) {
+  if (!ref) return null;
+  let driver = await dbGet('SELECT * FROM users WHERE id = ?', [ref]);
+  if (!driver) {
+    driver = await dbGet('SELECT * FROM users WHERE driver_id = ?', [ref]);
+  }
+  return driver;
+}
+
 // AUTHENTICATION
 app.post('/api/auth/register', async (req, res) => {
   const { phone, name, password } = req.body;
@@ -602,11 +612,18 @@ app.get('/api/trips', async (req, res) => {
 app.post('/api/trips', async (req, res) => {
   const { driver_id, report_id, criticality, travel_time, preemptions, confidence, distance, vehicle_no } = req.body;
   const id = uuidv4();
-  
-  await dbRun(`INSERT INTO emergency_trips 
+
+  // Accept human driver codes: resolve to users.id UUID for FK integrity.
+  let driverUuid = driver_id;
+  if (driver_id) {
+    const driver = await resolveDriver(driver_id);
+    if (driver) driverUuid = driver.id;
+  }
+
+  await dbRun(`INSERT INTO emergency_trips
     (id, driver_id, report_id, criticality, travel_time, preemptions, confidence, distance, vehicle_no)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, driver_id, report_id, criticality, travel_time, preemptions, confidence, distance, vehicle_no]
+    [id, driverUuid, report_id, criticality, travel_time, preemptions, confidence, distance, vehicle_no]
   );
   
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [id]);
@@ -633,9 +650,13 @@ app.post('/api/trips/:id/location', async (req, res) => {
   const { latitude, longitude, driver_id } = req.body;
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
   if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  // Ownership: only the assigned driver updates their active emergency.
-  if (driver_id && trip.driver_id && driver_id !== trip.driver_id) {
-    return res.status(403).json({ error: 'Only the assigned driver can update this trip' });
+  // Ownership: only the assigned driver updates their active emergency (UUID or human code).
+  if (driver_id && trip.driver_id) {
+    const sender = await resolveDriver(driver_id);
+    const senderId = sender ? sender.id : driver_id;
+    if (senderId !== trip.driver_id) {
+      return res.status(403).json({ error: 'Only the assigned driver can update this trip' });
+    }
   }
   if (latitude != null && longitude != null && trip.driver_id) {
     await dbRun('UPDATE users SET current_latitude = ?, current_longitude = ?, last_location_update = CURRENT_TIMESTAMP WHERE id = ?', [latitude, longitude, trip.driver_id]);
@@ -661,9 +682,13 @@ app.patch('/api/trips/:id/status', async (req, res) => {
 
   const trip = await dbGet('SELECT * FROM emergency_trips WHERE id = ?', [req.params.id]);
   if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  // Ownership: only the assigned driver updates their active emergency.
-  if (driver_id && trip.driver_id && driver_id !== trip.driver_id) {
-    return res.status(403).json({ error: 'Only the assigned driver can update this trip' });
+  // Ownership: only the assigned driver updates their active emergency (UUID or human code).
+  if (driver_id && trip.driver_id) {
+    const sender = await resolveDriver(driver_id);
+    const senderId = sender ? sender.id : driver_id;
+    if (senderId !== trip.driver_id) {
+      return res.status(403).json({ error: 'Only the assigned driver can update this trip' });
+    }
   }
 
   await dbRun("UPDATE emergency_trips SET status = ? WHERE id = ?", [status, req.params.id]);
