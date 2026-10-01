@@ -519,12 +519,34 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
   res.json({ report: updatedReport, dispatch: fullDispatch });
 });
 
+// Retire any still-unclaimed dispatch for a report so drivers stop seeing it
+// after the admin resolves or rejects the incident.
+async function cancelOpenDispatches(reportId, reason) {
+  const stale = await dbAll("SELECT id FROM dispatches WHERE report_id = ? AND status = 'available'", [reportId]);
+  for (const d of stale) {
+    await dbRun("UPDATE dispatches SET status = 'cancelled' WHERE id = ?", [d.id]);
+    io.emit('dispatch.cancelled', { dispatchId: d.id, report_id: reportId, reason });
+  }
+}
+
+// Admin: Resolve incident
+app.post('/api/admin/incidents/:id/resolve', authMiddleware, requireRole('admin'), async (req, res) => {
+  const report = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+  if (!report) return res.status(404).json({ error: 'Incident not found' });
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [req.params.id]);
+  await cancelOpenDispatches(req.params.id, 'resolved');
+  const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
+  io.emit('report_updated', withExpiry(updated));
+  notifyAdmin();
+  res.json(updated);
+});
+
 // Admin: Reject incident
 app.post('/api/admin/incidents/:id/reject', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { reason } = req.body;
   await dbRun("UPDATE road_reports SET lifecycle_state = 'REJECTED', status = 'rejected' WHERE id = ?", [req.params.id]);
+  await cancelOpenDispatches(req.params.id, 'rejected');
   const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', updated);
+  io.emit('report_updated', withExpiry(updated));
   notifyAdmin();
   res.json(updated);
 });
