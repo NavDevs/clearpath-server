@@ -789,9 +789,23 @@ function lifecycle(r) {
     return r.lifecycle_state || r.status || 'ACTIVE';
 }
 
-function badge(label, extra = '') {
+// Human-friendly incident progress: DISPATCHED means the emergency request
+// exists but no driver has taken it yet; ACCEPTED+ means a driver owns it.
+function lifecycleLabel(state) {
+    switch (String(state || '').toUpperCase()) {
+        case 'DISPATCHED': return 'DISPATCHED — waiting for driver';
+        case 'ACCEPTED': return 'ACCEPTED — driver assigned';
+        case 'EN_ROUTE': return 'EN_ROUTE — driver on the way';
+        case 'ARRIVED': return 'ARRIVED — driver on scene';
+        case 'HUMAN_REVIEW': return 'HUMAN_REVIEW — needs admin decision';
+        case 'PENDING_VERIFICATION': return 'PENDING_VERIFICATION — AI checking';
+        default: return state;
+    }
+}
+
+function badge(label, extra = '', clsOverride = null) {
     const text = label == null || label === '' ? '—' : String(label);
-    const cls = text === '—' ? '' : 'badge-' + text;
+    const cls = text === '—' ? '' : 'badge-' + (clsOverride || text);
     return '<span class="badge ' + cls + ' ' + extra + '"><span class="badge-dot"></span>' + esc(text) + '</span>';
 }
 
@@ -1093,7 +1107,9 @@ function aiSummary(r) {
 function incidentActions(r) {
     const s = lifecycle(r);
     const done = s === 'RESOLVED' || s === 'REJECTED';
-    const verify = done ? '' : '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\')">Verify + Dispatch</button>';
+    // Verify only makes sense before an emergency request exists; once the
+    // incident is VERIFIED/DISPATCHED/claimed, the buttons would be misleading.
+    const verify = (done || !isReviewable(r)) ? '' : '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\')">Verify + Dispatch</button>';
     const reject = done ? '' : '<button class="btn-danger" onclick="rejectIncident(\'' + esc(r.id) + '\')">Reject</button>';
     const detail = '<button class="btn-ghost" onclick="showIncident(\'' + esc(r.id) + '\')">Details</button>';
     return '<div class="row-actions">' + verify + reject + detail + '</div>';
@@ -1125,7 +1141,7 @@ function renderIncidents() {
                 '<td>' + photo + '</td>' +
                 '<td>' + esc(r.reporter_name || '—') + '<span class="cell-sub">' + esc(r.reporter_phone || '') + '</span></td>' +
                 '<td>' + aiSummary(r) + '</td>' +
-                '<td>' + badge(lifecycle(r)) + '</td>' +
+                '<td>' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</td>' +
                 '<td>' + incidentActions(r) + '</td>' +
             '</tr>';
         }).join('');
@@ -1152,7 +1168,7 @@ function aiBlock(r) {
 
 function reviewCard(r) {
     return '<div class="review-card">' +
-        '<div class="review-head">' + badge(lifecycle(r)) + typeChip(r.type) +
+        '<div class="review-head">' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + typeChip(r.type) +
             '<span class="mono">' + esc(fmtTime(r.created_at)) + ' · ' + esc(relative(r.created_at)) + '</span>' +
         '</div>' +
         '<div class="review-title">' + esc(r.description || 'No description provided') + '</div>' +
@@ -1189,7 +1205,7 @@ function renderReview() {
         '<td>' + typeChip(r.type) + '</td>' +
         '<td class="mono">' + locationOf(r) + '</td>' +
         '<td>' + aiSummary(r) + '</td>' +
-        '<td>' + badge(lifecycle(r)) + '</td>' +
+        '<td>' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</td>' +
         '<td class="mono">' + esc(relative(r.created_at)) + '</td>' +
         '<td><div class="row-actions">' +
             '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\')">Verify</button>' +
@@ -1221,9 +1237,9 @@ async function rejectIncident(id) {
 function showIncident(id) {
     const r = state.incidents.find((i) => String(i.id) === String(id));
     if (!r) return;
-    $('modal-title').textContent = 'Incident · ' + lifecycle(r);
+    $('modal-title').textContent = 'Incident · ' + lifecycleLabel(lifecycle(r));
     $('modal-body').innerHTML =
-        '<div class="review-head">' + typeChip(r.type) + badge(lifecycle(r)) + '</div>' +
+        '<div class="review-head">' + typeChip(r.type) + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</div>' +
         '<p style="margin-top:10px;color:#c3d3e6">' + esc(r.description || 'No description provided') + '</p>' +
         '<div class="mono" style="margin-top:10px">' + locationOf(r) + '<br>Reported ' + esc(fmtTime(r.created_at)) +
         ' by ' + esc(r.reporter_name || '—') + '</div>' +
