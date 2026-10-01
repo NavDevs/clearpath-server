@@ -134,6 +134,18 @@ app.post('/api/auth/roadly', async (req, res) => {
   res.status(400).json({ error: 'Please use /register or /login endpoints' });
 });
 
+// Admin login -> JWT with role=admin (dashboard + approval flows)
+app.post('/api/auth/admin/login', async (req, res) => {
+  const { username, password } = req.body;
+  const adminUser = process.env.ADMIN_USERNAME || 'admin';
+  const adminPass = process.env.ADMIN_PASSWORD || 'clearpath123';
+  if (username !== adminUser || password !== adminPass) {
+    return res.status(401).json({ error: 'Invalid admin credentials' });
+  }
+  const token = jwt.sign({ id: 'admin', role: 'admin', username: adminUser }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  res.json({ token, user: { id: 'admin', role: 'admin', username: adminUser } });
+});
+
 app.post('/api/auth/signalaid', async (req, res) => {
   const { driver_id, vehicle_no } = req.body;
   let user = await dbGet('SELECT * FROM users WHERE driver_id = ? AND vehicle_no = ?', [driver_id, vehicle_no]);

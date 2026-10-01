@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClearPath Admin — Approvals & Incidents</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0b0f12; color: #f5f5f7; margin: 0; padding: 20px; }
+  h1 { font-size: 22px; }
+  .card { background: #151b22; border: 1px solid #2a3340; border-radius: 12px; padding: 16px; margin: 14px 0; }
+  input, select, button { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a3340; background: #0f141a; color: #fff; margin: 4px 0; }
+  button { background: #16a34a; border: none; font-weight: 700; cursor: pointer; }
+  button.danger { background: #dc2626; }
+  button.secondary { background: #334155; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #2a3340; vertical-align: top; }
+  img.thumb { width: 90px; height: 60px; object-fit: cover; border-radius: 8px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .ACTIVE { background: #0ea5e9; } .PENDING_VERIFICATION { background: #f59e0b; color: #000; }
+  .HUMAN_REVIEW { background: #f59e0b; color: #000; } .VERIFIED { background: #16a34a; }
+  .DISPATCHED { background: #16a34a; } .ACCEPTED { background: #16a34a; }
+  .EN_ROUTE { background: #0ea5e9; } .ARRIVED { background: #0ea5e9; }
+  .REJECTED { background: #dc2626; } .RESOLVED { background: #64748b; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<h1>🚨 ClearPath Admin — Signal Aid Emergency Response</h1>
+<p>Backend source of truth. Approve drivers, verify incidents, monitor dispatches.</p>
+
+<div class="card" id="loginCard">
+  <h3>Admin Login</h3>
+  <input id="username" placeholder="admin" value="admin">
+  <input id="password" type="password" placeholder="clearpath123">
+  <button onclick="adminLogin()">Login</button>
+  <span id="loginMsg"></span>
+</div>
+
+<div class="card">
+  <h3>System Stats <button class="secondary" onclick="loadAll()">Refresh</button></h3>
+  <pre id="stats">Login first</pre>
+</div>
+
+<div class="card">
+  <h3>Driver Approval Requests (NEW DRIVER → APPROVED)</h3>
+  <div id="driverRequests">Login first</div>
+</div>
+
+<div class="card">
+  <h3>Incidents Needing Human Review</h3>
+  <div id="humanReview">Login first</div>
+</div>
+
+<div class="card">
+  <h3>All Incidents (ACTIVE → PENDING_VERIFICATION → VERIFIED → DISPATCHED → ACCEPTED → EN_ROUTE → ARRIVED → RESOLVED)</h3>
+  <div id="incidents">Login first</div>
+</div>
+
+<div class="card">
+  <h3>Active Dispatches + Assigned Drivers</h3>
+  <div id="dispatches">Login first</div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('clearpath_admin_token') || '';
+function headers() { return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN }; }
+
+async function adminLogin() {
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+  const res = await fetch('/api/auth/admin/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  const data = await res.json();
+  if (res.ok) {
+    TOKEN = data.token;
+    localStorage.setItem('clearpath_admin_token', TOKEN);
+    document.getElementById('loginMsg').textContent = 'Logged in as admin';
+    loadAll();
+  } else {
+    document.getElementById('loginMsg').textContent = data.error || 'Login failed';
+  }
+}
+
+async function loadAll() {
+  if (!TOKEN) return;
+  await Promise.all([loadStats(), loadDriverRequests(), loadHumanReview(), loadIncidents(), loadDispatches()]);
+}
+
+async function loadStats() {
+  const res = await fetch('/api/admin/stats', { headers: headers() });
+  document.getElementById('stats').textContent = JSON.stringify(await res.json(), null, 2);
+}
+
+async function loadDriverRequests() {
+  const res = await fetch('/api/admin/driver-requests', { headers: headers() });
+  const rows = await res.json();
+  if (!Array.isArray(rows)) { document.getElementById('driverRequests').textContent = JSON.stringify(rows); return; }
+  const pending = rows.filter(r => r.status === 'pending');
+  document.getElementById('driverRequests').innerHTML = pending.length === 0 ? 'No pending requests 🎉' : pending.map(r => `
+    <div class="card">
+      <b>${r.name || ''}</b> (${r.phone || ''})<br>
+      Driver ID: <b>${r.driver_id}</b> · Vehicle: <b>${r.vehicle_no}</b> (${r.vehicle_type})<br>
+      Org: ${r.organization || '—'} · Submitted: ${r.created_at || ''}<br>
+      <div class="row">
+        <button onclick="approveDriver('${r.id}')">APPROVE</button>
+        <button class="danger" onclick="rejectDriver('${r.id}')">REJECT</button>
+      </div>
+    </div>`).join('');
+}
+
+async function approveDriver(id) {
+  await fetch('/api/admin/driver-requests/' + id + '/approve', { method: 'POST', headers: headers() });
+  loadAll();
+}
+async function rejectDriver(id) {
+  const reason = prompt('Rejection reason:') || 'Not eligible';
+  await fetch('/api/admin/driver-requests/' + id + '/reject', { method: 'POST', headers: headers(), body: JSON.stringify({ rejection_reason: reason }) });
+  loadAll();
+}
+
+async function loadHumanReview() {
+  const res = await fetch('/api/admin/incidents', { headers: headers() });
+  const rows = await res.json();
+  const list = Array.isArray(rows) ? rows.filter(r => r.lifecycle_state === 'HUMAN_REVIEW' || r.lifecycle_state === 'PENDING_VERIFICATION') : [];
+  document.getElementById('humanReview').innerHTML = list.length === 0 ? 'Nothing waiting 🎉' : list.map(incidentCard).join('');
+}
+
+async function loadIncidents() {
+  const res = await fetch('/api/admin/incidents', { headers: headers() });
+  const rows = await res.json();
+  const list = Array.isArray(rows) ? rows.slice(0, 30) : [];
+  document.getElementById('incidents').innerHTML = list.map(incidentCard).join('');
+}
+
+function incidentCard(r) {
+  return `<div class="card">
+    <span class="badge ${r.lifecycle_state}">${r.lifecycle_state}</span>
+    <b> ${r.type}</b> · ${r.address || ''} · ${r.created_at || ''}<br>
+    ${r.description || ''}<br>
+    ${r.photo_url ? `<img class="thumb" src="${r.photo_url}">` : ''}<br>
+    AI: ${r.detected_type || '—'} (${r.confidence ?? '—'}) · ${r.severity || ''}<br>
+    <div class="row">
+      <button onclick="verifyIncident('${r.id}')">VERIFY + DISPATCH</button>
+      <button class="danger" onclick="rejectIncident('${r.id}')">REJECT</button>
+    </div>
+  </div>`;
+}
+
+async function verifyIncident(id) {
+  await fetch('/api/admin/incidents/' + id + '/verify', { method: 'POST', headers: headers() });
+  loadAll();
+}
+async function rejectIncident(id) {
+  await fetch('/api/admin/incidents/' + id + '/reject', { method: 'POST', headers: headers(), body: JSON.stringify({}) });
+  loadAll();
+}
+
+async function loadDispatches() {
+  const res = await fetch('/api/admin/dispatches', { headers: headers() });
+  const rows = await res.json();
+  if (!Array.isArray(rows)) { document.getElementById('dispatches').textContent = JSON.stringify(rows); return; }
+  document.getElementById('dispatches').innerHTML = rows.length === 0 ? 'No dispatches' :
+    `<table><tr><th>Status</th><th>Vehicle</th><th>Incident</th><th>Driver</th><th>Created</th></tr>` +
+    rows.slice(0, 30).map(d => `<tr><td><span class="badge ${d.status === 'available' ? 'PENDING_VERIFICATION' : 'VERIFIED'}">${d.status}</span></td><td>${d.required_vehicle}</td><td>${d.incident_type} · ${d.address || ''}</td><td>${d.driver_name || d.driver_id || '—'} (${d.vehicle_no || ''})</td><td>${d.created_at || ''}</td></tr>`).join('') + `</table>`;
+}
+
+if (TOKEN) loadAll();
+</script>
+</body>
+</html>
