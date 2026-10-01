@@ -5,9 +5,9 @@
 # payloads the admin dashboard consumes, so "the dashboard works" can be verified
 # rather than assumed:
 #
-#   citizen report -> ACTIVE -> PENDING_VERIFICATION -> HUMAN_REVIEW
+#   citizen report (fire) -> ACTIVE -> DISPATCHED immediately (no waiting)
 #   new driver     -> registration request -> admin APPROVED
-#   admin verify   -> VERIFIED -> DISPATCHED (fire dispatch created)
+#   dispatch       -> fire dispatch already available for the driver
 #   driver accepts -> dispatch ACCEPTED, trip EN_ROUTE with criticality + distance
 #   driver arrives -> ARRIVED ; driver completes -> RESOLVED, driver AVAILABLE
 #
@@ -28,7 +28,7 @@ TOKEN=$(curl -s -X POST "$BASE/api/auth/admin/login" -H 'Content-Type: applicati
 [ -n "$TOKEN" ] || { echo "admin login failed"; exit 1; }
 echo "admin token acquired (${#TOKEN} chars)"
 
-say "2. Citizen registers and reports a FIRE (must start ACTIVE)"
+say "2. Citizen registers and reports a FIRE (dispatches immediately)"
 CITIZEN=$(curl -s -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
   -d "{\"phone\":\"$PHONE\",\"password\":\"testpass123\",\"name\":\"E2E Reporter\"}" | jq_get '.user.id')
 REPORT=$(curl -s -X POST "$BASE/api/reports" \
@@ -36,7 +36,7 @@ REPORT=$(curl -s -X POST "$BASE/api/reports" \
   -F "latitude=13.0827" -F "longitude=80.2707" -F "address=E2E Test Junction")
 REPORT_ID=$(echo "$REPORT" | jq_get '.id')
 echo "report created: $REPORT_ID (initial lifecycle_state=$(echo "$REPORT" | jq_get '.lifecycle_state'))"
-sleep 3   # let the AI verification stage resolve (falls to HUMAN_REVIEW when no AI key)
+sleep 3   # let the immediate dispatch land
 
 say "3. Driver registers (must stay pending, cannot self-approve)"
 curl -s -X POST "$BASE/api/auth/driver/register" -H 'Content-Type: application/json' \
@@ -50,9 +50,8 @@ curl -s -X POST "$BASE/api/auth/driver/login" -H 'Content-Type: application/json
 say "4. Admin approves the driver"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/driver-requests/$REQ_ID/approve" | jq_get '.message'
 
-say "5. Admin verifies the incident -> dispatch must be created"
-curl -s -X POST -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/incidents/$REPORT_ID/verify" \
-  | jq_get '.report.lifecycle_state' | sed 's/^/  incident lifecycle now: /'
+say "5. Dispatch already exists for the fire incident"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/incidents" | jq_get '.find(r=>r.id==="'"$REPORT_ID"'").lifecycle_state' | sed 's/^/  incident lifecycle: /'
 DISPATCH_ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/dispatches" | jq_get '.find(d=>d.report_id==="'"$REPORT_ID"'").id')
 REQUIRED=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/dispatches" | jq_get '.find(d=>d.report_id==="'"$REPORT_ID"'").required_vehicle')
 echo "  dispatch $DISPATCH_ID requires: $REQUIRED"
@@ -78,7 +77,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/trips" | node -e "
 let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{
   const rows=JSON.parse(d);
   if(!rows.length) return console.log('  (no trips)');
-  for(const t of rows) console.log('  driver='+(t.driver_name||t.driver_id)+' vehicle='+(t.vehicle_no||'-')+' incident='+(t.incident_type||'-')+' criticality='+(t.criticality??'-')+' confidence='+(t.confidence??'-')+' distance='+(t.distance??'-')+' status='+(t.status??'-'));
+  for(const t of rows) console.log('  driver='+(t.driver_name||t.driver_id)+' vehicle='+(t.vehicle_no||'-')+' incident='+(t.incident_type||'-')+' criticality='+(t.criticality??'-')+' distance='+(t.distance??'-')+' status='+(t.status??'-'));
 });"
 
 say "9. Admin dashboard: approvals, vehicles, incidents, dispatches, users"

@@ -121,7 +121,7 @@ async function ensureSqliteSchema(db) {
   await migrate('ALTER TABLE users ADD COLUMN last_location_update TIMESTAMP');
 
   // Incident lifecycle (ACTIVE -> ... -> RESOLVED) and driver reference.
-  await migrate("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'PENDING_AI'");
+  await migrate("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'ACTIVE'");
   await migrate('ALTER TABLE road_reports ADD COLUMN driver_id TEXT');
 
   // Live emergency response columns on trips.
@@ -129,19 +129,6 @@ async function ensureSqliteSchema(db) {
   await migrate("ALTER TABLE emergency_trips ADD COLUMN status TEXT DEFAULT 'completed'");
 
   // Tables the fallback never created.
-  await migrate(`CREATE TABLE IF NOT EXISTS ai_analyses (
-    id TEXT PRIMARY KEY,
-    report_id TEXT,
-    detected_type TEXT,
-    severity TEXT,
-    confidence REAL,
-    people_injured INTEGER,
-    road_blocked INTEGER,
-    emergency_recommended INTEGER,
-    raw_reasoning TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
-
   await migrate(`CREATE TABLE IF NOT EXISTS dispatches (
     id TEXT PRIMARY KEY,
     report_id TEXT,
@@ -183,7 +170,7 @@ async function ensureSqliteSchema(db) {
       photo_url TEXT,
       points INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      lifecycle_state TEXT DEFAULT 'PENDING_AI',
+      lifecycle_state TEXT DEFAULT 'ACTIVE',
       driver_id TEXT
     )`);
     await run(`INSERT INTO road_reports
@@ -245,7 +232,7 @@ async function initDb() {
 
     // Safely add the new lifecycle column without breaking existing constraints
     try {
-      await client.query("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'PENDING_AI'");
+      await client.query("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'ACTIVE'");
     } catch (e) {}
 
     await client.query(`CREATE TABLE IF NOT EXISTS emergency_trips (
@@ -280,21 +267,7 @@ async function initDb() {
       FOREIGN KEY(report_id) REFERENCES road_reports(id)
     )`);
 
-    // PHASE 2: New AI Analyses Table
-    await client.query(`CREATE TABLE IF NOT EXISTS ai_analyses (
-      id TEXT PRIMARY KEY,
-      report_id TEXT REFERENCES road_reports(id),
-      detected_type TEXT,
-      severity TEXT,
-      confidence DOUBLE PRECISION,
-      people_injured BOOLEAN,
-      road_blocked BOOLEAN,
-      emergency_recommended BOOLEAN,
-      raw_reasoning TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    // PHASE 2: New Dispatches Table
+    // Dispatches Table
     await client.query(`CREATE TABLE IF NOT EXISTS dispatches (
       id TEXT PRIMARY KEY,
       report_id TEXT REFERENCES road_reports(id),
@@ -387,7 +360,6 @@ const dbAll = async (sql, params = []) => {
  * not support TRUNCATE ... CASCADE.
  */
 const RESET_TABLES = [
-  'ai_analyses',
   'dispatches',
   'emergency_trips',
   'reward_events',

@@ -46,12 +46,6 @@ const SALT_ROUNDS = 10;
 const JWT_SECRET = process.env.JWT_SECRET || 'clearpath-dev-secret-change-in-production';
 const JWT_EXPIRES_IN = '30d';
 
-// AI verification is opt-in. With it off (the default) a submitted incident stays
-// ACTIVE and an admin verifies or rejects it by hand from the dashboard, so the
-// whole verification path is manual and deterministic. Set AI_VERIFICATION=on to
-// hand verification back to the AI pipeline.
-const AI_VERIFICATION_ENABLED = String(process.env.AI_VERIFICATION || 'off').toLowerCase() === 'on';
-
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { 
@@ -376,12 +370,9 @@ app.get('/api/admin/users', authMiddleware, requireRole('admin'), async (req, re
 // Get all incidents (for admin)
 app.get('/api/admin/incidents', authMiddleware, requireRole('admin'), async (req, res) => {
   const incidents = await dbAll(`
-    SELECT r.*, u.name as reporter_name, u.phone as reporter_phone,
-           ai.detected_type, ai.confidence, ai.severity, ai.emergency_recommended,
-           ai.people_injured, ai.road_blocked, ai.raw_reasoning
+    SELECT r.*, u.name as reporter_name, u.phone as reporter_phone
     FROM road_reports r
     LEFT JOIN users u ON r.user_id = u.id
-    LEFT JOIN ai_analyses ai ON ai.report_id = r.id
     ORDER BY r.created_at DESC
   `);
   res.json(incidents);
@@ -435,11 +426,13 @@ app.patch('/api/admin/dispatches/:id/status', authMiddleware, requireRole('admin
     [status, null, new Date().toISOString(), dispatch.id]);
 
   // Keep the incident lifecycle consistent with its assignment.
+  // A cancelled dispatch returns the incident to ACTIVE (visible again; the
+  // sweeper re-dispatches live accident/fire emergencies automatically).
   let incident = null;
   if (dispatch.report_id) {
-    const nextState = status === 'cancelled' ? 'VERIFIED' : 'DISPATCHED';
+    const nextState = status === 'cancelled' ? 'ACTIVE' : 'DISPATCHED';
     await dbRun('UPDATE road_reports SET lifecycle_state = ?, status = ? WHERE id = ?',
-      [nextState, 'verified', dispatch.report_id]);
+      [nextState, 'pending', dispatch.report_id]);
     incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
     if (incident) io.emit('report_updated', incident);
   }
@@ -460,7 +453,8 @@ app.patch('/api/admin/dispatches/:id/status', authMiddleware, requireRole('admin
   res.json({ dispatch: updated, incident });
 });
 
-// Update incident status (admin)
+// Update incident status (admin). Resolving also retires any still-unclaimed
+// emergency request so drivers stop seeing it.
 app.patch('/api/admin/incidents/:id/status', authMiddleware, requireRole('admin'), async (req, res) => {
   const { status, lifecycle_state } = req.body;
   if (status) {
@@ -469,20 +463,27 @@ app.patch('/api/admin/incidents/:id/status', authMiddleware, requireRole('admin'
   if (lifecycle_state) {
     await dbRun('UPDATE road_reports SET lifecycle_state = ? WHERE id = ?', [lifecycle_state, req.params.id]);
   }
+  if (lifecycle_state === 'RESOLVED') {
+    const stale = await dbAll("SELECT id FROM dispatches WHERE report_id = ? AND status = 'available'", [req.params.id]);
+    for (const d of stale) {
+      await dbRun("UPDATE dispatches SET status = 'cancelled' WHERE id = ?", [d.id]);
+      io.emit('dispatch.cancelled', { dispatchId: d.id, report_id: req.params.id, reason: 'resolved' });
+    }
+  }
   const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', updated);
+  io.emit('report_updated', withExpiry(updated));
   notifyAdmin();
   res.json(updated);
 });
 
-// Admin: Manually verify incident (for human review)
+// Admin: Re-activate an incident and (for accident/fire) ensure a dispatch exists
 app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin'), async (req, res) => {
   const report = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
   if (!report) {
     return res.status(404).json({ error: 'Incident not found' });
   }
 
-  await dbRun("UPDATE road_reports SET lifecycle_state = 'VERIFIED', status = 'verified' WHERE id = ?", [req.params.id]);
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'ACTIVE', status = 'pending' WHERE id = ?", [req.params.id]);
   let updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
   io.emit('report_updated', updatedReport);
   io.emit('new_incident', updatedReport);
@@ -501,7 +502,7 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
         [dispatchId, req.params.id, requiredVehicle]
       );
     }
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'verified' WHERE id = ?", [req.params.id]);
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'DISPATCHED', status = 'pending' WHERE id = ?", [req.params.id]);
     fullDispatch = await dbGet(`
       SELECT d.*, r.latitude, r.longitude, r.type, r.description, r.address, r.photo_url,
              r.created_at AS reported_at
@@ -557,24 +558,22 @@ app.get('/api/admin/stats', authMiddleware, requireRole('admin'), async (req, re
   const approvedDrivers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'emergency_driver' AND approval_status = 'approved'");
   const pendingDrivers = await dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'emergency_driver' AND approval_status = 'pending'");
   const totalIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports");
-  const pendingIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state IN ('ACTIVE','PENDING_VERIFICATION','HUMAN_REVIEW')");
-  const verifiedIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state IN ('VERIFIED','DISPATCHED','ACCEPTED','EN_ROUTE','ARRIVED')");
   const activeIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state = 'ACTIVE'");
+  const respondingIncidents = await dbGet("SELECT COUNT(*) as count FROM road_reports WHERE lifecycle_state IN ('DISPATCHED','ACCEPTED','EN_ROUTE','ARRIVED')");
   const totalDispatches = await dbGet("SELECT COUNT(*) as count FROM dispatches");
   const activeDispatches = await dbGet("SELECT COUNT(*) as count FROM dispatches WHERE status = 'available'");
-  
+
   res.json({
     users: { total: totalUsers?.count || 0 },
-    drivers: { 
-      total: totalDrivers?.count || 0, 
-      approved: approvedDrivers?.count || 0, 
-      pending: pendingDrivers?.count || 0 
+    drivers: {
+      total: totalDrivers?.count || 0,
+      approved: approvedDrivers?.count || 0,
+      pending: pendingDrivers?.count || 0
     },
-    incidents: { 
+    incidents: {
       total: totalIncidents?.count || 0,
-      pending_verification: pendingIncidents?.count || 0,
-      verified: verifiedIncidents?.count || 0,
-      active: activeIncidents?.count || 0
+      active: activeIncidents?.count || 0,
+      responding: respondingIncidents?.count || 0
     },
     dispatches: { 
       total: totalDispatches?.count || 0,
@@ -587,9 +586,7 @@ app.get('/api/reports', async (req, res) => {
   res.json(reports.map(withExpiry));
 });
 
-// Loaded regardless of the AI_VERIFICATION switch: with the switch off it is simply
-// never called, and the module is harmless to require.
-const { analyzeIncident, createDispatch, isCriticalEmergency, resolveEmergencyVehicle } = require('./ai_service');
+const { createDispatch, isCriticalEmergency, resolveEmergencyVehicle } = require('./dispatch_service');
 
 // Issue-type resolution durations (hours). Preserves the configured values
 // shown on the dashboard: accident 2h, fire 1h, congestion 3h, blocked 4h,
@@ -677,28 +674,18 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     );
     await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [pts, user_id]);
 
-    // Spec: do NOT broadcast unverified incidents as confirmed emergencies.
-    // The reporter's own app already inserts the returned report locally.
+    // Keep the map feed to report updates — dispatches travel on their own channel.
     io.emit('report_updated', newReport);
 
-  // Critical emergencies NEVER wait for a human: with AI on they go through
-  // AI analysis first, with AI off (or on AI failure) they dispatch straight
-  // from the citizen's explicit accident/fire category. Normal issues stay
-  // ACTIVE for manual admin verification when AI is off.
+  // Critical emergencies dispatch immediately from the citizen's explicit
+  // accident/fire category — no verification step, no human wait. Normal
+  // issues stay ACTIVE and visible for their full configured duration.
   const broadcast = (event, data) => io.emit(event, data);
   if (isCriticalEmergency(normType)) {
-    if (AI_VERIFICATION_ENABLED) {
-      analyzeIncident(newReport, broadcast)
-        .catch(err => console.error("AI Pipeline failed:", err));
-    } else {
-      createDispatch(newReport, resolveEmergencyVehicle(normType, null), broadcast)
-        .catch(err => console.error("Immediate dispatch failed:", err));
-    }
-  } else if (AI_VERIFICATION_ENABLED) {
-    analyzeIncident(newReport, broadcast)
-      .catch(err => console.error("AI Pipeline failed:", err));
+    createDispatch(newReport, resolveEmergencyVehicle(normType), broadcast)
+      .catch(err => console.error("Immediate dispatch failed:", err));
   } else {
-    console.log(`[ClearPath] Incident ${id} is ACTIVE and waiting for manual admin verification.`);
+    console.log(`[ClearPath] Incident ${id} is ACTIVE for its full duration.`);
   }
 
     io.emit('points_updated', { user_id, points: pts });
@@ -712,7 +699,7 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   }
 });
 
-// Admin endpoint to verify/resolve reports
+// Admin endpoint to update a report's stored status
 app.post('/api/reports/:id/status', async (req, res) => {
   const { status } = req.body;
   await dbRun('UPDATE road_reports SET status = ? WHERE id = ?', [status, req.params.id]);
@@ -761,28 +748,17 @@ app.post('/api/dispatches/:id/accept', async (req, res) => {
 
   // Driver becomes BUSY; incident moves DISPATCHED -> ACCEPTED.
   await dbRun('UPDATE users SET availability = ? WHERE id = ?', ['BUSY', driver.id]);
-  await dbRun("UPDATE road_reports SET lifecycle_state = 'ACCEPTED', status = 'verified' WHERE id = ?", [dispatch.report_id]);
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'ACCEPTED', status = 'pending' WHERE id = ?", [dispatch.report_id]);
 
   // Enrich the trip with real evidence so admin monitoring never shows blank rows.
-  // Criticality comes from the stored AI severity, distance from the driver's last
-  // known position to the incident, confidence from the AI analysis. Nothing is invented:
-  // if the backend has no evidence for a field, the field stays NULL.
+  // Criticality comes from the accepting driver's choice, defaulting to 'high'
+  // for verified emergencies. Nothing is invented: unknown fields stay NULL.
   const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
-  const analysis = await dbGet(
-    'SELECT severity, confidence FROM ai_analyses WHERE report_id = ? ORDER BY created_at DESC LIMIT 1',
-    [dispatch.report_id]
-  );
-  // Criticality priority: the accepting driver's choice, then the stored AI severity,
-  // then 'high' — every dispatch reaching this point is a human/AI verified emergency.
-  const SEVERITY_TO_CRITICALITY = { LOW: 'low', MEDIUM: 'medium', HIGH: 'high', CRITICAL: 'critical' };
   const REQUESTED_TO_CRITICALITY = { normal: 'low', low: 'low', medium: 'medium', high: 'high', critical: 'critical' };
   const criticality =
     REQUESTED_TO_CRITICALITY[String(requestedCriticality || '').toLowerCase()] ||
-    SEVERITY_TO_CRITICALITY[String(analysis?.severity || '').toUpperCase()] ||
     'high';
-  const confidence = analysis && analysis.confidence != null
-    ? Math.round(Number(analysis.confidence) * 100)
-    : null;
+  const confidence = null;
   let distance = null;
   if (
     driver.current_latitude != null && driver.current_longitude != null &&
@@ -878,7 +854,7 @@ app.post('/api/trips/:id/location', async (req, res) => {
   if (trip.report_id) {
     const incident = await dbGet('SELECT lifecycle_state FROM road_reports WHERE id = ?', [trip.report_id]);
     if (incident && incident.lifecycle_state === 'ACCEPTED') {
-      await dbRun("UPDATE road_reports SET lifecycle_state = 'EN_ROUTE', status = 'verified' WHERE id = ?", [trip.report_id]);
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'EN_ROUTE', status = 'pending' WHERE id = ?", [trip.report_id]);
       const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [trip.report_id]);
       io.emit('report_updated', updated);
     }
@@ -925,7 +901,7 @@ app.patch('/api/trips/:id/status', async (req, res) => {
 
   if (status === 'arrived') {
     if (updatedTrip.report_id) {
-      await dbRun("UPDATE road_reports SET lifecycle_state = 'ARRIVED', status = 'verified' WHERE id = ?", [updatedTrip.report_id]);
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'ARRIVED', status = 'pending' WHERE id = ?", [updatedTrip.report_id]);
       const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
       if (incident) io.emit('report_updated', incident);
     }
@@ -974,9 +950,9 @@ app.patch('/api/users/:id/availability', authMiddleware, requireRole('admin'), a
 });
 
 // GET available dispatches (Signal-Aid loads on app start)
-// Only VERIFIED/DISPATCHED incidents are dispatchable. Unverified incidents
-// never appear here. vehicle_type is enforced here too (backend), never
-// trusting the app alone: ambulance sees accident jobs, fire sees fire jobs.
+// Only DISPATCHED incidents with a live dispatch appear here. vehicle_type is
+// enforced here too (backend), never trusting the app alone: ambulance sees
+// accident jobs, fire sees fire jobs.
 app.get('/api/dispatches', async (req, res) => {
   const { vehicle_type } = req.query;
   const params = [];
@@ -998,35 +974,10 @@ app.get('/api/dispatches', async (req, res) => {
   res.json(await enrichDispatches(dispatches));
 });
 
-// Attach reported time, emergency priority, AI result and expiry countdown to
-// each emergency request so the driver sees the full incident evidence.
-async function enrichDispatches(rows) {
-  const ids = rows.map((d) => d.report_id).filter(Boolean);
-  const analyses = {};
-  if (ids.length) {
-    const placeholders = ids.map(() => '?').join(',');
-    const found = await dbAll(
-      `SELECT report_id, detected_type, severity, confidence,
-              emergency_recommended, raw_reasoning, created_at
-       FROM ai_analyses WHERE report_id IN (${placeholders}) ORDER BY created_at DESC`,
-      ids
-    );
-    for (const a of found) {
-      if (!analyses[a.report_id]) analyses[a.report_id] = a;
-    }
-  }
-  return rows.map((d) => {
-    const a = analyses[d.report_id] || {};
-    return withExpiry({
-      ...d,
-      priority: a.severity || 'HIGH',
-      ai_detected_type: a.detected_type || null,
-      ai_confidence: a.confidence ?? null,
-      ai_severity: a.severity || null,
-      ai_emergency_recommended: a.emergency_recommended ?? null,
-      ai_reasoning: a.raw_reasoning || null,
-    });
-  });
+// Attach reported time, emergency priority and expiry countdown to each
+// emergency request so the driver sees the full incident evidence.
+function enrichDispatches(rows) {
+  return rows.map((d) => withExpiry({ ...d, priority: 'HIGH' }));
 }
 
 function haversineKm(lat1, lon1, lat2, lon2) {
@@ -1038,7 +989,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 }
 
 // GET nearby available dispatches for an approved driver.
-// Same guarantees as /api/dispatches: verified incidents only, backend
+// Same guarantees as /api/dispatches: live dispatches only, backend
 // vehicle-type enforcement, then radius filtering around the driver.
 app.get('/api/dispatches/nearby', async (req, res) => {
   const { lat, lon, vehicle_type, radiusKm } = req.query;
@@ -1169,9 +1120,9 @@ async function runExpiryEngine() {
   }
 }
 
-// Safety net: a critical accident/fire must never sit undispatched because an
-// AI call failed, the server restarted mid-analysis, or verification is off.
-// Anything still ACTIVE/PENDING/HUMAN_REVIEW after 90s gets its dispatch now.
+// Safety net: a critical accident/fire must never sit undispatched because the
+// server restarted mid-request. Anything still un-dispatched after 90s gets
+// its dispatch now (legacy PENDING/HUMAN_REVIEW rows included).
 async function runDispatchSweeper() {
   const stale = await dbAll(
     `SELECT r.* FROM road_reports r
@@ -1208,7 +1159,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\nðŸ›£ï¸  ClearPath Command Server v1.0');
   console.log(`   Dashboard : http://localhost:${PORT}`);
-  console.log(`   Incidents : admin-verified (manual) | AI verification: ${AI_VERIFICATION_ENABLED ? 'ON' : 'OFF'}`);
+  console.log(`   Incidents : post -> visible -> auto-resolve | dispatch: immediate on accident/fire`);
   console.log(`   TTL rules : accident=2h | congestion=3h | blocked=4h | flooding=6h | pothole=48h\n`);
 });
 

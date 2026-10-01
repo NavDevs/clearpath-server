@@ -41,7 +41,6 @@
 
 | Feature | Implementation |
 |---------|----------------|
-| AI Image Analysis | Groq Llama 3.2 Vision (real API) |
 | Dispatch Creation | Real DB transactions, atomic acceptance |
 | Live GPS Tracking | Real device GPS → backend every 5s |
 | Trip History | Persisted in Neon PostgreSQL |
@@ -53,8 +52,8 @@
 
 ## Disclaimer for Evaluators
 
-> **This project demonstrates a complete emergency response pipeline from citizen report → AI verification → driver dispatch → live tracking → completion.**
+> **This project demonstrates a complete emergency response pipeline from citizen report → immediate dispatch → driver dispatch → live tracking → completion.**
 >
 > The **signal preemption component is a UI simulation** to visualize the *concept* of emergency vehicle priority at intersections. In a production deployment, this would require integration with municipal traffic control systems (e.g., SCATS, SCOOT, or local ATCS via standardized protocols like NTCIP).
 >
-> All other components (AI analysis, dispatch logic, GPS tracking, database persistence, real-time sockets) are fully functional and production-ready.
+> All other components (dispatch logic, GPS tracking, database persistence, real-time sockets) are fully functional.

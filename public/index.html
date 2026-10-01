@@ -318,7 +318,7 @@
         }
         .badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
         .badge-ACTIVE, .badge-EN_ROUTE, .badge-ARRIVED, .badge-RECHECK { background: var(--info-bg); color: var(--info); }
-        .badge-PENDING_AI, .badge-PENDING_VERIFICATION, .badge-HUMAN_REVIEW, .badge-pending { background: var(--warn-bg); color: var(--warn); }
+        .badge-pending { background: var(--warn-bg); color: var(--warn); }
         .badge-VERIFIED, .badge-DISPATCHED, .badge-ACCEPTED, .badge-approved, .badge-verified { background: var(--success-bg); color: var(--success); }
         .badge-RESOLVED, .badge-resolved, .badge-completed, .badge-available { background: rgba(143,163,190,0.12); color: #afbdd0; }
         .badge-REJECTED, .badge-rejected, .badge-cancelled { background: var(--danger-bg); color: var(--danger); }
@@ -364,16 +364,6 @@
             box-shadow: 0 4px 14px rgba(61,154,255,0.2);
         }
         .user-cell { display: flex; align-items: center; }
-        .ai-block {
-            margin-top: 10px; padding: 12px 14px; border-radius: 12px; font-size: 12px; line-height: 1.6;
-            background: rgba(9,17,30,0.7); border: 1px solid var(--border); color: #a9bcd4;
-        }
-        .ai-block .ai-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 7px; }
-        .ai-block .ai-key {
-            font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.12em;
-            text-transform: uppercase; color: #6f8299; display: block;
-        }
-        .ai-block .ai-reason { font-style: italic; color: #93a7c1; }
         .review-card { padding: 20px; border-bottom: 1px solid var(--border); }
         .review-card:last-child { border-bottom: none; }
         .review-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -467,10 +457,8 @@
         /* modal overlay fades, not just appears */
         .modal-overlay.open { animation: fadeIn 0.2s ease-out; }
 
-        /* waiting-for-driver / review badges breathe so live states are visible */
+        /* waiting-for-driver badges breathe so live states are visible */
         .badge-DISPATCHED .badge-dot,
-        .badge-HUMAN_REVIEW .badge-dot,
-        .badge-PENDING_VERIFICATION .badge-dot,
         .badge-ACCEPTED .badge-dot,
         .badge-EN_ROUTE .badge-dot { animation: pulse 1.6s ease-in-out infinite; }
 
@@ -540,7 +528,7 @@
 
             <div class="sidebar-label">Incidents</div>
             <div class="sidebar-link" data-view="incidents"><span class="icon">🚨</span> Incidents <span class="count" id="nav-incidents">0</span></div>
-            <div class="sidebar-link" data-view="review"><span class="icon">🧠</span> Human Review <span class="count" id="nav-review">0</span></div>
+
 
             <div class="sidebar-label">Signal-Aid</div>
             <div class="sidebar-link" data-view="approvals"><span class="icon">✅</span> Driver Approvals <span class="count" id="nav-approvals">0</span></div>
@@ -607,7 +595,7 @@
                 <div class="stat-icon">✅</div>
                 <div class="stat-label">Verified</div>
                 <div class="stat-value" id="stat-verified">—</div>
-                <div class="stat-sub" id="stat-verified-sub">Verified incidents</div>
+                <div class="stat-sub" id="stat-verified-sub">Responding now</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">📡</div>
@@ -651,18 +639,6 @@
                 </div></div>
             </div>
 
-            <div class="section fade-in">
-                <div class="section-header">
-                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Needs Attention</span></div>
-                    <span class="section-count" id="dash-review-count"></span>
-                </div>
-                <div class="card"><div class="card-inner">
-                    <table>
-                        <thead><tr><th>Type</th><th>Location</th><th>AI Verdict</th><th>Lifecycle</th><th>Reported</th><th>Action</th></tr></thead>
-                        <tbody id="dash-review-tbody"><tr class="empty-row"><td colspan="6">Nothing waiting 🎉</td></tr></tbody>
-                    </table>
-                </div></div>
-            </div>
         </div>
 
         <!-- ── VIEW: INCIDENTS ─────────────────────────────────── -->
@@ -679,23 +655,10 @@
                 </div>
                 <div class="card"><div class="card-inner">
                     <table>
-                        <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Reporter</th><th>AI Verification</th><th>Lifecycle</th><th>Actions</th></tr></thead>
-                        <tbody id="incidents-tbody"><tr class="empty-row"><td colspan="8">Loading…</td></tr></tbody>
+                        <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Reporter</th><th>Lifecycle</th><th>Actions</th></tr></thead>
+                        <tbody id="incidents-tbody"><tr class="empty-row"><td colspan="7">Loading…</td></tr></tbody>
                     </table>
                 </div></div>
-            </div>
-        </div>
-
-        <!-- ── VIEW: HUMAN REVIEW ──────────────────────────────── -->
-        <div class="view hidden" id="view-review">
-            <div class="section fade-in">
-                <div class="section-header">
-                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Human Verification Queue</span></div>
-                    <span class="section-count" id="review-count"></span>
-                </div>
-                <div class="card" id="review-list">
-                    <div class="empty-row" style="padding:40px;text-align:center"><div style="color:#7487a1">Loading…</div></div>
-                </div>
             </div>
         </div>
 
@@ -756,8 +719,8 @@
                 </div>
                 <div class="card"><div class="card-inner">
                     <table>
-                        <thead><tr><th>Driver</th><th>Criticality</th><th>Time</th><th>Distance</th><th>Incident</th><th>Confidence</th><th>Status</th></tr></thead>
-                        <tbody id="trips-tbody"><tr class="empty-row"><td colspan="7">No trips yet</td></tr></tbody>
+                        <thead><tr><th>Driver</th><th>Criticality</th><th>Time</th><th>Distance</th><th>Incident</th><th>Status</th></tr></thead>
+                        <tbody id="trips-tbody"><tr class="empty-row"><td colspan="6">No trips yet</td></tr></tbody>
                     </table>
                 </div></div>
             </div>
@@ -867,8 +830,6 @@ function lifecycleLabel(state) {
         case 'ACCEPTED': return 'ACCEPTED — driver assigned';
         case 'EN_ROUTE': return 'EN_ROUTE — driver on the way';
         case 'ARRIVED': return 'ARRIVED — driver on scene';
-        case 'HUMAN_REVIEW': return 'HUMAN_REVIEW — needs admin decision';
-        case 'PENDING_VERIFICATION': return 'PENDING_VERIFICATION — AI checking';
         default: return state;
     }
 }
@@ -892,7 +853,6 @@ function locationOf(r) {
 
 function criticalityOf(trip) {
     if (trip.criticality) return trip.criticality;
-    // Fall back to the AI severity the backend stored for the incident, if the trip predates it.
     return null;
 }
 
@@ -1089,12 +1049,12 @@ function renderCounts() {
     const activeTrips = state.trips.filter((t) => ['en_route', 'arrived'].includes(String(t.status || '')));
 
     setCount('nav-approvals', pendingApprovals, pendingApprovals > 0);
-    setCount('nav-review', reviewQueue.length, reviewQueue.length > 0);
     setCount('nav-incidents', state.incidents.length, false);
     setCount('nav-vehicles', state.drivers.length, false);
     setCount('nav-dispatches', state.dispatches.filter((d) => d.status === 'available').length, false);
     setCount('nav-trips', state.trips.length, false);
     setCount('nav-users', state.users.length, false);
+}
 }
 
 function setCount(id, value, alert) {
@@ -1111,9 +1071,9 @@ function renderStats() {
         return;
     }
     countUp($('stat-incidents'), s.incidents.total);
-    $('stat-incidents-sub').textContent = s.incidents.active + ' active · ' + s.incidents.pending_verification + ' in verification';
-    countUp($('stat-verified'), s.incidents.verified);
-    $('stat-verified-sub').textContent = 'Verified incidents';
+    $('stat-incidents-sub').textContent = s.incidents.active + ' active · ' + s.incidents.responding + ' responding';
+    countUp($('stat-verified'), s.incidents.responding || 0);
+    $('stat-verified-sub').textContent = 'Responding now';
     countUp($('stat-dispatches'), s.dispatches.total);
     $('stat-dispatches-sub').textContent = s.dispatches.available + ' awaiting a driver';
     countUp($('stat-users'), s.users.total);
@@ -1192,29 +1152,40 @@ async function rejectDriver(id) {
     } catch (err) { toast(err.message, 'error'); }
 }
 
-/* ── Incidents ───────────────────────────────────────────────── */
-function isReviewable(r) {
-    const s = lifecycle(r);
-    return s === 'HUMAN_REVIEW' || s === 'PENDING_VERIFICATION' || s === 'PENDING_AI' || s === 'ACTIVE';
+async function resolveIncident(id) {
+    try {
+        await api('/api/admin/incidents/' + id + '/resolve', { method: 'POST' });
+        toast('Incident resolved.');
+        await refreshAll();
+    } catch (err) { toast(err.message, 'error'); }
 }
 
-function aiSummary(r) {
-    if (!r.detected_type && r.confidence == null && !r.severity) return '<span class="mono">No AI result yet</span>';
-    const confidence = r.confidence == null ? '—' : Math.round(Number(r.confidence) * 100) + '%';
-    return '<span class="cell-strong">' + esc(r.detected_type || '—') + '</span>' +
-           '<span class="cell-sub">' + esc(r.severity || '—') + ' · ' + confidence + ' confidence' +
-           (r.emergency_recommended ? ' · response recommended' : '') + '</span>';
+async function rejectIncident(id) {
+    try {
+        await api('/api/admin/incidents/' + id + '/reject', { method: 'POST', body: JSON.stringify({}) });
+        toast('Incident rejected.');
+        await refreshAll();
+    } catch (err) { toast(err.message, 'error'); }
+}
+
+/* ── Incidents ───────────────────────────────────────────────── */
+// No human-review gate anymore — all incidents are visible in the list.
+// Only resolved/rejected are hidden from active lists.
+function isReviewable(r) {
+    const s = lifecycle(r);
+    return s !== 'RESOLVED' && s !== 'REJECTED';
 }
 
 function incidentActions(r) {
     const s = lifecycle(r);
     const done = s === 'RESOLVED' || s === 'REJECTED';
-    // Verify only makes sense before an emergency request exists; once the
-    // incident is VERIFIED/DISPATCHED/claimed, the buttons would be misleading.
-    const verify = (done || !isReviewable(r)) ? '' : '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\')">Verify + Dispatch</button>';
+    // Only show Resolve button for active incidents that aren't done
+    const resolveBtn = (!done && isReviewable(r))
+        ? '<button class="btn-primary" onclick="resolveIncident(\'' + esc(r.id) + '\')">Resolve</button>'
+        : '';
     const reject = done ? '' : '<button class="btn-danger" onclick="rejectIncident(\'' + esc(r.id) + '\')">Reject</button>';
     const detail = '<button class="btn-ghost" onclick="showIncident(\'' + esc(r.id) + '\')">Details</button>';
-    return '<div class="row-actions">' + verify + reject + detail + '</div>';
+    return '<div class="row-actions">' + resolveBtn + reject + detail + '</div>';
 }
 
 function renderIncidents() {
@@ -1230,7 +1201,7 @@ function renderIncidents() {
     }
 
     const body = $('incidents-tbody');
-    if (!rows.length) { empty(body, 8, 'No incidents reported yet.'); }
+    if (!rows.length) { empty(body, 7, 'No incidents reported yet.'); }
     else {
         body.innerHTML = rows.map((r) => {
             const photo = r.photo_url
@@ -1242,7 +1213,6 @@ function renderIncidents() {
                 '<td class="mono">' + locationOf(r) + '</td>' +
                 '<td>' + photo + '</td>' +
                 '<td>' + esc(r.reporter_name || '—') + '<span class="cell-sub">' + esc(r.reporter_phone || '') + '</span></td>' +
-                '<td>' + aiSummary(r) + '</td>' +
                 '<td>' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</td>' +
                 '<td>' + incidentActions(r) + '</td>' +
             '</tr>';
@@ -1253,88 +1223,9 @@ function renderIncidents() {
 
 $('incident-filter').addEventListener('change', renderIncidents);
 
-/* ── Human review queue ──────────────────────────────────────── */
-function aiBlock(r) {
-    if (!r.detected_type && r.confidence == null && !r.raw_reasoning) return '';
-    const confidence = r.confidence == null ? '—' : Math.round(Number(r.confidence) * 100) + '%';
-    return '<div class="ai-block">' +
-        '<div class="ai-row">' +
-            '<span><span class="ai-key">AI detected</span>' + esc(r.detected_type || '—') + '</span>' +
-            '<span><span class="ai-key">Severity</span>' + esc(r.severity || '—') + '</span>' +
-            '<span><span class="ai-key">Confidence</span>' + confidence + '</span>' +
-            '<span><span class="ai-key">Response advised</span>' + (r.emergency_recommended ? 'yes' : 'no') + '</span>' +
-        '</div>' +
-        (r.raw_reasoning ? '<div class="ai-reason">' + esc(r.raw_reasoning) + '</div>' : '') +
-    '</div>';
-}
 
-function reviewCard(r) {
-    return '<div class="review-card">' +
-        '<div class="review-head">' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + typeChip(r.type) +
-            '<span class="mono">' + esc(fmtTime(r.created_at)) + ' · ' + esc(relative(r.created_at)) + '</span>' +
-        '</div>' +
-        '<div class="review-title">' + esc(r.description || 'No description provided') + '</div>' +
-        '<div class="mono" style="margin-top:6px">' + locationOf(r) + ' · reporter ' + esc(r.reporter_name || '—') + '</div>' +
-        aiBlock(r) +
-        (r.photo_url ? '<img src="' + esc(r.photo_url) + '" class="report-photo" style="width:100%;height:220px;margin-top:12px" onclick="showPhoto(\'' + esc(r.photo_url) + '\')" alt="Incident photo">' : '') +
-        '<div class="row-actions" style="margin-top:14px">' +
-            '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\')">Verify + Dispatch</button>' +
-            '<button class="btn-danger" onclick="rejectIncident(\'' + esc(r.id) + '\')">Reject</button>' +
-            '<button class="btn-ghost" onclick="showIncident(\'' + esc(r.id) + '\')">Open AI verification results</button>' +
-        '</div>' +
-    '</div>';
-}
 
-function renderReview() {
-    const priority = { HUMAN_REVIEW: 0, PENDING_VERIFICATION: 1, PENDING_AI: 2, ACTIVE: 3 };
-    // Most urgent first: explicit human review, then still-verifying, then new reports.
-    const queue = state.incidents
-        .filter(isReviewable)
-        .sort((a, b) => (priority[lifecycle(a)] ?? 9) - (priority[lifecycle(b)] ?? 9));
 
-    const list = $('review-list');
-    if (!queue.length) {
-        list.innerHTML = '<div class="empty-row" style="padding:40px;text-align:center">Nothing waiting for human verification 🎉</div>';
-    } else {
-        list.innerHTML = queue.map(reviewCard).join('');
-    }
-    $('review-count').textContent = queue.length + ' awaiting decision';
-
-    const body = $('dash-review-tbody');
-    const top = queue.slice(0, 4);
-    if (!top.length) empty(body, 6, 'Nothing waiting 🎉');
-    else body.innerHTML = top.map((r) => '<tr>' +
-        '<td>' + typeChip(r.type) + '</td>' +
-        '<td class="mono">' + locationOf(r) + '</td>' +
-        '<td>' + aiSummary(r) + '</td>' +
-        '<td>' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</td>' +
-        '<td class="mono">' + esc(relative(r.created_at)) + '</td>' +
-        '<td><div class="row-actions">' +
-            '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\')">Verify</button>' +
-            '<button class="btn-ghost" onclick="showView(\'review\')">Review</button>' +
-        '</div></td>' +
-    '</tr>').join('');
-    $('dash-review-count').textContent = queue.length + ' needing a decision';
-}
-
-async function verifyIncident(id) {
-    try {
-        const res = await api('/api/admin/incidents/' + id + '/verify', { method: 'POST' });
-        const dispatch = res && res.dispatch;
-        toast(dispatch
-            ? 'Incident verified · ' + dispatch.required_vehicle + ' dispatch created.'
-            : 'Incident verified.');
-        await refreshAll();
-    } catch (err) { toast(err.message, 'error'); }
-}
-
-async function rejectIncident(id) {
-    try {
-        await api('/api/admin/incidents/' + id + '/reject', { method: 'POST', body: JSON.stringify({}) });
-        toast('Incident rejected.');
-        await refreshAll();
-    } catch (err) { toast(err.message, 'error'); }
-}
 
 function showIncident(id) {
     const r = state.incidents.find((i) => String(i.id) === String(id));
@@ -1345,10 +1236,9 @@ function showIncident(id) {
         '<p style="margin-top:10px;color:#c3d3e6">' + esc(r.description || 'No description provided') + '</p>' +
         '<div class="mono" style="margin-top:10px">' + locationOf(r) + '<br>Reported ' + esc(fmtTime(r.created_at)) +
         ' by ' + esc(r.reporter_name || '—') + '</div>' +
-        aiBlock(r) +
         (r.photo_url ? '<img src="' + esc(r.photo_url) + '" alt="Incident photo">' : '') +
         '<div class="row-actions" style="margin-top:16px">' +
-            '<button class="btn-primary" onclick="verifyIncident(\'' + esc(r.id) + '\');closeModal()">Verify + Dispatch</button>' +
+            '<button class="btn-primary" onclick="resolveIncident(\'' + esc(r.id) + '\');closeModal()">Resolve</button>' +
             '<button class="btn-danger" onclick="rejectIncident(\'' + esc(r.id) + '\');closeModal()">Reject</button>' +
         '</div>';
     $('modal').classList.add('open');
@@ -1400,7 +1290,7 @@ async function setAvailability(id, availability, el) {
 function renderDispatches() {
     const body = $('dispatches-tbody');
     const rows = state.dispatches;
-    if (!rows.length) empty(body, 7, 'No emergency requests yet. Verified accident / fire incidents create them.');
+    if (!rows.length) empty(body, 7, 'No emergency requests yet. Accident / fire incidents create them immediately.');
     else body.innerHTML = rows.map((d) => {
         const assigned = d.driver_name || d.driver_id
             ? '<span class="cell-strong">' + esc(d.driver_name || d.driver_id) + '</span>' + (d.vehicle_no ? '<span class="cell-sub">' + esc(d.vehicle_no) + '</span>' : '')
@@ -1464,19 +1354,18 @@ function renderTrips() {
             time: '<span class="mono">' + esc(tripTime(t)) + '</span>',
             distance: t.distance != null ? '<span class="mono">' + Number(t.distance).toFixed(2) + ' km</span>' : '<span class="mono">—</span>',
             incident: '<span class="cell-strong">' + esc(t.incident_type || '—') + '</span><span class="cell-sub">' + esc(t.address || '') + '</span>',
-            confidence: t.confidence != null ? '<span class="mono">' + esc(t.confidence) + '%</span>' : '<span class="mono">—</span>',
             status: badge(t.status || 'en_route')
         };
     };
 
     if (!rows.length) {
-        empty(body, 7, 'No emergency dispatches yet.');
+        empty(body, 6, 'No emergency dispatches yet.');
         empty(dashBody, 6, 'No trips yet');
     } else {
         body.innerHTML = rows.map((t) => {
             const c = cells(t);
             return '<tr><td>' + c.driver + '</td><td>' + c.criticality + '</td><td>' + c.time + '</td><td>' + c.distance +
-                   '</td><td>' + c.incident + '</td><td>' + c.confidence + '</td><td>' + c.status + '</td></tr>';
+                   '</td><td>' + c.incident + '</td><td>' + c.status + '</td></tr>';
         }).join('');
         dashBody.innerHTML = rows.slice(0, 5).map((t) => {
             const c = cells(t);

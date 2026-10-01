@@ -1,20 +1,20 @@
 ﻿# ⚡ ClearPath Command Server v2
 
-Central cloud intelligence backend for **Roadly** (citizen reporting) and **Signal-Aid** (emergency response).
+Central cloud backend for **Roadly** (citizen reporting) and **Signal-Aid** (emergency response).
 
 ---
 
 ## 🌟 Features
 
 ### Core Pipeline
-- **AI-Powered Verification:** Groq Llama 3.2 Vision analyzes citizen photos → 70% confidence threshold
-- **Smart Decision Engine:** ACCIDENT → ambulance, FIRE → fire, Others → Roadly map only
+- **Direct Emergency Dispatch:** ACCIDENT → ambulance, FIRE → fire dispatch the moment the citizen reports it — no analysis step, no waiting
+- **Human-Curated Categories:** the citizen's own report type decides the response; everything else stays visible on the Roadly map for its full duration
 - **Emergency Dispatch:** Atomic driver acceptance with concurrency protection (409 if taken)
 - **Live Response Tracking:** GPS every 5s, signal preemption simulation, arrival/completion flow
-- **Persistent History:** All trips, dispatches, AI analyses stored in Neon PostgreSQL
+- **Persistent History:** All trips and dispatches stored in Neon PostgreSQL
 
 ### Real-time (Socket.IO)
-- `new_incident` — Verified/active reports → Roadly map
+- `new_incident` — Active reports → Roadly map
 - `dispatch.created` — Emergency jobs → Signal-Aid drivers
 - `trip.location_updated` — Live GPS → Admin dashboard
 - `trip.arrived` / `trip.completed` — State transitions
@@ -23,9 +23,9 @@ Central cloud intelligence backend for **Roadly** (citizen reporting) and **Sign
 ### Gamification
 - Points per report type, leaderboard, reward events audit trail
 
-### Auto-Expiry (2-Phase)
-- ACTIVE/VERIFIED → RECHECK (type-specific hours)
-- RECHECK → RESOLVED (+30 min)
+### Auto-Expiry (per issue type)
+- Each incident type has a configured duration (accident 2h, fire 1h, congestion 3h, blocked 4h, flooding 6h, pothole 48h) after which it auto-resolves
+- Unclaimed dispatches are cancelled with their incident; handled ones never expire
 
 ---
 
@@ -37,7 +37,6 @@ Central cloud intelligence backend for **Roadly** (citizen reporting) and **Sign
 | API | Express 5 |
 | Real-time | Socket.IO 4 |
 | Database | Neon PostgreSQL (primary) / SQLite (local fallback) |
-| AI Vision | Groq Llama 3.2 11B Vision Preview |
 | File Storage | Supabase Storage (CDN, public bucket) |
 | Routing | OSRM (free, no API key) |
 | Security | bcrypt password hashing, file type validation, restricted CORS |
@@ -65,7 +64,6 @@ Central cloud intelligence backend for **Roadly** (citizen reporting) and **Sign
 DATABASE_URL=postgresql://user:pass@ep-xxx.neon.tech/db?sslmode=require
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=sb_secret_xxx
-GROQ_API_KEY=gsk_xxx
 CORS_ORIGIN=https://your-frontend-domain.com
 ```
 
@@ -78,14 +76,13 @@ CORS_ORIGIN=https://your-frontend-domain.com
 ```
 backend/
 ├── server.js           # Main Express + Socket.IO app
-├── ai_service.js       # Groq AI analysis + Decision Engine
+├── dispatch_service.js  # Emergency dispatch helpers (no external calls)
 ├── database.js         # Neon/SQLite pool + auto-migrations
 ├── package.json
 ├── .node-version
 ├── render.yaml
 ├── API.md              # Full API reference
 ├── DATABASE.md         # Schema + relationships
-├── AI_PIPELINE.md      # AI flow + decision rules
 ├── SOCKET_EVENTS.md    # All Socket.IO events
 ├── DEMO_GUIDE.md       # End-to-end test procedures
 └── SIMULATION_NOTICE.md # Signal preemption disclaimer
@@ -98,7 +95,7 @@ backend/
 ```bash
 cd backend
 npm install
-# Set DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY
+# Set DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 npm start
 # Server on http://localhost:3000
 ```
@@ -118,7 +115,6 @@ npm start
 
 - [API Reference](API.md)
 - [Database Schema](DATABASE.md)
-- [AI Pipeline](AI_PIPELINE.md)
 - [Socket Events](SOCKET_EVENTS.md)
 - [Demo Guide](DEMO_GUIDE.md)
 - [Simulation Notice](SIMULATION_NOTICE.md)

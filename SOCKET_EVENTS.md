@@ -19,7 +19,7 @@ const socket = io('https://clearpath-server.onrender.com', {
 ## Server → Client Events
 
 ### `new_incident`
-**Trigger:** Decision engine verifies report (VERIFIED) or marks ACTIVE  
+**Trigger:** Report submitted (ACTIVE) or incident dispatched  
 **Audience:** Roadly citizens (all connected)  
 **Payload:** Full report object with `lifecycle_state`
 
@@ -29,8 +29,8 @@ const socket = io('https://clearpath-server.onrender.com', {
   "user_id": "uuid",
   "type": "accident",
   "description": "Car crash",
-  "status": "verified",
-  "lifecycle_state": "VERIFIED",
+  "status": "pending",
+  "lifecycle_state": "ACTIVE",
   "latitude": 12.9716,
   "longitude": 77.5946,
   "address": "MG Road",
@@ -43,7 +43,7 @@ const socket = io('https://clearpath-server.onrender.com', {
 ---
 
 ### `report_updated`
-**Trigger:** Admin changes status, auto-expiry engine, AI lifecycle change  
+**Trigger:** Admin resolve/reject, auto-expiry engine, lifecycle change  
 **Audience:** Roadly citizens, Admin dashboard  
 **Payload:** Updated report object (partial or full)
 
@@ -58,7 +58,7 @@ const socket = io('https://clearpath-server.onrender.com', {
 ---
 
 ### `dispatch.created`
-**Trigger:** Decision engine creates emergency dispatch (ACCIDENT/FIRE ≥ 70%)  
+**Trigger:** Accident/fire report submitted (immediate dispatch)  
 **Audience:** Signal-Aid drivers (all connected)  
 **Payload:** Dispatch with joined report data
 
@@ -177,16 +177,16 @@ const socket = io('https://clearpath-server.onrender.com', {
 
 ### Accident Report → Dispatch
 ```
-Citizen POST /api/reports
+Citizen POST /api/reports (type: accident/fire)
         │
-        ▼ (async)
-AI analyzes → Decision Engine
+        ▼ (immediate, same request)
+Critical type → createDispatch
         │
-        ├─▶ VERIFIED + ambulance dispatch
+        ├─▶ DISPATCHED + ambulance/fire dispatch
         │       │
         │       ▼ INSERT dispatches
         │       ▼ EMIT dispatch.created → Signal-Aid drivers
-        │       ▼ EMIT new_incident (VERIFIED) → Roadly citizens
+        │       ▼ EMIT new_incident → Roadly citizens
         │
         └─▶ ACTIVE (non-emergency)
                 ▼

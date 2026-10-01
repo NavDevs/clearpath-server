@@ -28,10 +28,10 @@
 |--------|------|-------------|
 | id | TEXT | PRIMARY KEY |
 | user_id | TEXT | FK → users(id) |
-| type | TEXT | accident, congestion, blocked, flooding, pothole |
+| type | TEXT | accident, congestion, blocked, flooding, pothole, fire, roadwork, other |
 | description | TEXT | |
-| status | TEXT | DEFAULT 'pending', CHECK (pending, verified, resolved) |
-| lifecycle_state | TEXT | DEFAULT 'PENDING_AI', CHECK (PENDING_AI, AI_ANALYZED, VERIFIED, NEEDS_REVIEW, ACTIVE, RECHECK, RESOLVED) |
+| status | TEXT | DEFAULT 'pending', CHECK (pending, verified, resolved, rejected) — only `pending`/`resolved`/`rejected` are written today |
+| lifecycle_state | TEXT | DEFAULT 'ACTIVE', CHECK (legacy PENDING_AI/AI_ANALYZED/VERIFIED/NEEDS_REVIEW, ACTIVE, DISPATCHED, ACCEPTED, EN_ROUTE, ARRIVED, RECHECK, RESOLVED, REJECTED) |
 | latitude | DOUBLE PRECISION | |
 | longitude | DOUBLE PRECISION | |
 | address | TEXT | |
@@ -43,22 +43,6 @@
 - `road_reports_user_idx` on user_id
 - `road_reports_status_idx` on status
 - `road_reports_created_idx` on created_at DESC
-
----
-
-### ai_analyses
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| report_id | TEXT | FK → road_reports(id) |
-| detected_type | TEXT | ACCIDENT, FIRE, BLOCKED, CONGESTION, POTHOLE, OTHER |
-| severity | TEXT | LOW, MEDIUM, HIGH, CRITICAL |
-| confidence | DOUBLE PRECISION | 0.0 - 1.0 |
-| people_injured | BOOLEAN | |
-| road_blocked | BOOLEAN | |
-| emergency_recommended | BOOLEAN | |
-| raw_reasoning | TEXT | AI explanation |
-| created_at | TIMESTAMP | DEFAULT NOW() |
 
 ---
 
@@ -83,10 +67,10 @@
 | driver_id | TEXT | FK → users(id) |
 | vehicle_no | TEXT | |
 | report_id | TEXT | FK → road_reports(id) |
-| criticality | TEXT | CHECK (low, medium, high, critical) |
+| criticality | TEXT | CHECK (low, medium, high, critical) — driver's own assessment |
 | travel_time | DOUBLE PRECISION | seconds |
 | preemptions | INTEGER | |
-| confidence | INTEGER | % |
+| confidence | INTEGER | legacy column, no longer written (stays NULL) |
 | distance | DOUBLE PRECISION | km |
 | status | TEXT | DEFAULT 'completed', CHECK (en_route, arrived, completed) |
 | started_at | TIMESTAMP | DEFAULT NOW() |
@@ -114,6 +98,16 @@
 
 ---
 
+### driver_approval_requests
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | TEXT | PRIMARY KEY |
+| user_id | TEXT | FK → users(id) |
+| status | TEXT | DEFAULT 'pending', CHECK (pending, approved, rejected) |
+| created_at | TIMESTAMP | DEFAULT NOW() |
+
+---
+
 ## Relationships
 
 ```
@@ -122,7 +116,6 @@ users (1) ──────< (N) emergency_trips
 users (1) ──────< (N) reward_events
 users (1) ──────< (N) dispatches (as driver)
 
-road_reports (1) ──────< (1) ai_analyses
 road_reports (1) ──────< (1) dispatches
 road_reports (1) ──────< (N) reward_events
 road_reports (1) ──────< (N) emergency_trips
@@ -134,46 +127,38 @@ dispatches (1) ──────< (1) emergency_trips
 
 ## Lifecycle State Machine
 
+The citizen's report type decides everything — accident and fire dispatch
+immediately, every other issue stays visible for its full duration.
+
 ```
-PENDING_AI
+SUBMITTED
     │
-    ▼ (AI analysis complete)
-AI_ANALYZED
+    ├─ ACCIDENT / FIRE ──▶ DISPATCHED ──▶ ACCEPTED ──▶ EN_ROUTE ──▶ ARRIVED ──▶ RESOLVED
+    │                          │
+    │                          └─ (no driver claimed before expiry) ──▶ CANCELLED dispatch
     │
-    ├─ confidence < 70% ──▶ NEEDS_REVIEW
-    │
-    ├─ ACCIDENT/FIRE + confidence ≥ 70% ──▶ VERIFIED ──▶ Dispatch created
-    │                                              │
-    │                                              ▼
-    │                                         ACTIVE (on Roadly map)
-    │                                              │
-    │                                              ▼ (auto-expiry)
-    │                                         RECHECK
-    │                                              │
-    │                                              ▼ (30 min later)
-    │                                         RESOLVED
-    │
-    └─ Other types (POTHOLE, BLOCKED, etc.) ──▶ ACTIVE ──▶ RECHECK ──▶ RESOLVED
+    └─ Other types ──▶ ACTIVE ──▶ (auto-expiry) ──▶ RESOLVED
+
+Any state ──▶ REJECTED (admin decision)
 ```
 
 ---
 
 ## Auto-Expiry Engine (Background Job)
 
-Runs every 10 minutes. Two-phase:
+Runs every 2 minutes. Single phase: an incident that outlives its configured
+duration moves to RESOLVED, and any still-unclaimed dispatch is cancelled.
+Incidents in ACCEPTED / EN_ROUTE / ARRIVED are never expired.
 
-**Phase 1: ACTIVE/VERIFIED → RECHECK**
-| Type | Hours to RECHECK |
-|------|------------------|
+| Type | Hours |
+|------|-------|
 | accident | 2 |
 | fire | 1 |
 | congestion | 3 |
 | blocked | 4 |
 | flooding | 6 |
 | pothole | 48 |
-| default | 4 |
-
-**Phase 2: RECHECK → RESOLVED** (additional 30 minutes)
+| roadwork / other / default | 4 |
 
 ---
 
@@ -206,4 +191,3 @@ All schema changes use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` or `try/catch`
 | `DATABASE_URL` | Yes | Neon connection string with sslmode=require |
 | `SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key for Storage uploads |
-| `GROQ_API_KEY` | Yes | Groq API key for AI analysis |

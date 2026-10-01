@@ -93,8 +93,8 @@ Get all road reports (latest first).
   "user_id": "uuid",
   "type": "accident|congestion|blocked|flooding|pothole",
   "description": "string",
-  "status": "pending|verified|resolved",
-  "lifecycle_state": "PENDING_AI|AI_ANALYZED|VERIFIED|NEEDS_REVIEW|ACTIVE|RECHECK|RESOLVED",
+  "status": "pending|resolved|rejected",
+  "lifecycle_state": "ACTIVE|DISPATCHED|ACCEPTED|EN_ROUTE|ARRIVED|RESOLVED|REJECTED",
   "latitude": 12.9716,
   "longitude": 77.5946,
   "address": "MG Road, Bangalore",
@@ -123,7 +123,7 @@ Submit a new road report with optional photo.
 | points | number | No (default from type) |
 | photo | file | No (image only, max 5MB) |
 
-**Response (200):** Report object with `lifecycle_state: "PENDING_AI"`
+**Response (200):** Report object with `lifecycle_state: "ACTIVE"` (immediately followed by `DISPATCHED` for accident/fire)
 
 **Errors:** 400 (invalid file type), 400 (file too large >5MB)
 
@@ -134,10 +134,10 @@ Update report status (admin only).
 
 **Request:**
 ```json
-{ "status": "verified" }
+{ "status": "resolved" }
 ```
 
-**Status values:** `pending`, `verified`, `resolved`
+**Status values:** `pending`, `resolved`, `rejected`
 
 ---
 
@@ -295,7 +295,7 @@ Update driver availability.
 ### Server → Client
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `new_incident` | Report object | New verified/active report for Roadly map |
+| `new_incident` | Report object | New active report for Roadly map |
 | `report_updated` | Report object | Report status/lifecycle changed |
 | `dispatch.created` | Dispatch object | New emergency job for Signal-Aid |
 | `dispatch.accepted` | `{dispatchId, driver_id}` | Job taken by another driver |
@@ -322,5 +322,4 @@ Update driver availability.
 | `DATABASE_URL` | Neon PostgreSQL connection string |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
-| `GROQ_API_KEY` | Groq API key for Llama 3.2 Vision |
 | `CORS_ORIGIN` | Allowed frontend origin (e.g., `https://your-app.com`) |
