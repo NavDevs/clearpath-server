@@ -43,7 +43,7 @@ const socket = io('https://clearpath-server.onrender.com', {
 ---
 
 ### `report_updated`
-**Trigger:** Admin resolve/reject, auto-expiry engine, lifecycle change  
+**Trigger:** TTL auto-expiry engine, dispatch/lifecycle change  
 **Audience:** Roadly citizens, Admin dashboard  
 **Payload:** Updated report object (partial or full)
 
@@ -52,6 +52,19 @@ const socket = io('https://clearpath-server.onrender.com', {
   "id": "uuid",
   "status": "resolved",
   "lifecycle_state": "RESOLVED"
+}
+```
+
+---
+
+### `report_deleted`
+**Trigger:** Retention purge — 48h after an incident became RESOLVED (hard delete)  
+**Audience:** Roadly citizens, Admin dashboard  
+**Payload:**
+
+```json
+{
+  "id": "uuid"
 }
 ```
 

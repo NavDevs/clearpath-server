@@ -123,6 +123,9 @@ async function ensureSqliteSchema(db) {
   // Incident lifecycle (ACTIVE -> ... -> RESOLVED) and driver reference.
   await migrate("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'ACTIVE'");
   await migrate('ALTER TABLE road_reports ADD COLUMN driver_id TEXT');
+  // When the TTL engine resolved it: starts the 48h retention window that
+  // ends with the row (and its photo) being purged forever.
+  await migrate('ALTER TABLE road_reports ADD COLUMN resolved_at TIMESTAMP');
 
   // Live emergency response columns on trips.
   await migrate('ALTER TABLE emergency_trips ADD COLUMN dispatch_id TEXT');
@@ -177,11 +180,12 @@ async function ensureSqliteSchema(db) {
       points INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       lifecycle_state TEXT DEFAULT 'ACTIVE',
-      driver_id TEXT
+      driver_id TEXT,
+      resolved_at TIMESTAMP
     )`);
     await run(`INSERT INTO road_reports
-      (id, user_id, type, description, status, latitude, longitude, address, photo_url, points, created_at, lifecycle_state)
-      SELECT id, user_id, type, description, status, latitude, longitude, address, photo_url, points, created_at, 'ACTIVE'
+      (id, user_id, type, description, status, latitude, longitude, address, photo_url, points, created_at, lifecycle_state, resolved_at)
+      SELECT id, user_id, type, description, status, latitude, longitude, address, photo_url, points, created_at, 'ACTIVE', resolved_at
       FROM road_reports_legacy`);
     await run('DROP TABLE road_reports_legacy');
     console.log('SQLite: road_reports rebuilt to allow the REJECTED lifecycle.');
@@ -239,6 +243,11 @@ async function initDb() {
     // Safely add the new lifecycle column without breaking existing constraints
     try {
       await client.query("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'ACTIVE'");
+    } catch (e) {}
+
+    // TTL retention clock: set when the engine resolves; drives the 48h purge.
+    try {
+      await client.query("ALTER TABLE road_reports ADD COLUMN resolved_at TIMESTAMP");
     } catch (e) {}
 
     await client.query(`CREATE TABLE IF NOT EXISTS emergency_trips (
@@ -331,6 +340,25 @@ function convertSql(sql) {
   return sql.replace(/\?/g, () => "$" + (i++));
 }
 
+// node-pg parses `timestamp without time zone` (a zoneless UTC wall-clock) by
+// reading its digits as the machine's LOCAL time, which shifts the instant by
+// the UTC offset on non-UTC machines. Recover the original wall-clock and
+// re-interpret it as UTC so expiry/retention math is machine-independent.
+const PG_TIMESTAMP_OID = 1114;
+function fixWallClockDates(row, fields) {
+  if (!row || !fields) return row;
+  for (const f of fields) {
+    if (f.dataTypeID === PG_TIMESTAMP_OID && row[f.name] instanceof Date) {
+      const d = row[f.name];
+      row[f.name] = new Date(Date.UTC(
+        d.getFullYear(), d.getMonth(), d.getDate(),
+        d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()
+      ));
+    }
+  }
+  return row;
+}
+
 const dbRun = async (sql, params = []) => {
   if (useSqlite) {
     return new Promise((resolve, reject) => {
@@ -349,7 +377,7 @@ const dbGet = async (sql, params = []) => {
   }
 
   const res = await pool.query(convertSql(sql), params);
-  return res.rows[0];
+  return fixWallClockDates(res.rows[0], res.fields);
 };
 
 const dbAll = async (sql, params = []) => {
@@ -360,7 +388,7 @@ const dbAll = async (sql, params = []) => {
   }
 
   const res = await pool.query(convertSql(sql), params);
-  return res.rows;
+  return res.rows.map((row) => fixWallClockDates(row, res.fields));
 };
 
 /**

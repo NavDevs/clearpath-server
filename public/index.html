@@ -155,6 +155,17 @@ body::before {
     color: #94A3B8; line-height: 1.9; font-weight: 500;
 }
 .ttl-grid span { color: #334155; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Per-incident TTL column: countdown to auto-resolve / countdown to purge */
+.ttl-cell { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+.ttl-live { color: #4F46E5; }
+.ttl-now { color: #B45309; }
+.ttl-purge { color: #64748B; }
+.ttl-detail { margin-top: 14px; border-top: 1px solid var(--border-soft); }
+.ttl-detail .ttl-row {
+    display: flex; justify-content: space-between; gap: 14px; padding: 8px 0;
+    border-bottom: 1px solid var(--border-soft); font-size: 12.5px; color: #475569;
+}
+.ttl-detail .ttl-row span:last-child { color: #0F172A; font-weight: 600; text-align: right; }
 .sidebar-live {
     display: flex; align-items: center; gap: 9px; padding: 10px 14px; border-radius: 10px;
     background: var(--success-bg); border: 1px solid var(--success-border);
@@ -636,7 +647,10 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
                 <div>🚧 Blocked</div><div><span>4 hrs</span></div>
                 <div>🌊 Flooding</div><div><span>6 hrs</span></div>
                 <div>🕳️ Pothole</div><div><span>48 hrs</span></div>
+                <div>🔧 Road Work</div><div><span>4 hrs</span></div>
+                <div>⚠️ Other</div><div><span>4 hrs</span></div>
             </div>
+            <div style="margin-top:8px;font-size:10px;color:#94A3B8;line-height:1.5">Resolved incidents stay 48 hrs, then are purged forever.</div>
         </div>
 
         <div class="sidebar-footer">
@@ -744,8 +758,8 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
                 </div>
                 <div class="card"><div class="card-inner">
                     <table>
-                        <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Reporter</th><th>Lifecycle</th><th>Actions</th></tr></thead>
-                        <tbody id="incidents-tbody"><tr class="empty-row"><td colspan="7">Loading…</td></tr></tbody>
+                        <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Reporter</th><th>Lifecycle</th><th>TTL</th><th>Actions</th></tr></thead>
+                        <tbody id="incidents-tbody"><tr class="empty-row"><td colspan="8">Loading…</td></tr></tbody>
                     </table>
                 </div></div>
             </div>
@@ -930,6 +944,50 @@ function badge(label, extra = '', clsOverride = null) {
     return '<span class="badge ' + cls + ' ' + extra + '"><span class="badge-dot"></span>' + esc(text) + '</span>';
 }
 
+/* ── Time-based lifecycle (TTL) helpers ────────────────────────
+   All timing values come from the backend (ttl_hours / expires_at /
+   removes_at / *_seconds) — the dashboard never invents durations. */
+function fmtDur(ms) {
+    if (!(ms > 0)) return '0m';
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return '<1m';
+    if (mins < 60) return mins + 'm';
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (hrs < 48) return remMins ? hrs + 'h ' + remMins + 'm' : hrs + 'h';
+    return Math.floor(hrs / 24) + 'd ' + (hrs % 24) + 'h';
+}
+
+// TTL cell: live countdown while active, retention countdown once resolved.
+function ttlCell(r) {
+    const s = lifecycle(r);
+    if (s === 'RESOLVED' || s === 'REJECTED') {
+        if (r.retention_seconds == null) return '<span class="mono">—</span>';
+        return '<span class="ttl-cell ttl-purge">⏳ ' + fmtDur(r.retention_seconds * 1000) + '</span>' +
+            '<span class="cell-sub">until purge</span>';
+    }
+    if (!r.expires_at) return '<span class="mono">—</span>';
+    const msLeft = new Date(r.expires_at).getTime() - Date.now();
+    if (msLeft <= 0) return '<span class="ttl-cell ttl-now">resolving…</span><span class="cell-sub">TTL ended</span>';
+    return '<span class="ttl-cell ttl-live">⏱ ' + fmtDur(msLeft) + '</span>' +
+        '<span class="cell-sub">TTL ' + esc(r.ttl_hours != null ? r.ttl_hours : '—') + 'h</span>';
+}
+
+// Detail-modal block: the full server-side timeline for one incident.
+function incidentTtlDetail(r) {
+    const rows = [
+        ['Auto-expiry (TTL)', (r.ttl_hours != null ? r.ttl_hours : '—') + ' hr' + (r.ttl_hours === 1 ? '' : 's') + ' after report'],
+        ['Expires', fmtTime(r.expires_at) + (r.remaining_seconds > 0 ? ' · in ' + fmtDur(r.remaining_seconds * 1000) : ' · now')],
+    ];
+    if (r.resolved_at) {
+        rows.push(['Auto-resolved', fmtTime(r.resolved_at)]);
+        rows.push(['Purged from server', fmtTime(r.removes_at) + (r.retention_seconds != null ? ' · in ' + fmtDur(r.retention_seconds * 1000) : '')]);
+    }
+    return '<div class="ttl-detail">' + rows.map(function (row) {
+        return '<div class="ttl-row"><span>' + esc(row[0]) + '</span><span class="mono">' + esc(row[1]) + '</span></div>';
+    }).join('') + '</div>';
+}
+
 function typeChip(type) {
     const icon = TYPE_ICONS[String(type || '').toLowerCase()] || '⚠️';
     return '<div class="type-chip"><div class="type-chip-icon">' + icon + '</div>' + esc(type || '—') + '</div>';
@@ -1020,7 +1078,9 @@ function reconcileTbody(tbody, items, keyFn, cellsFn, opts = {}) {
             const td = tr.children[ci];
             if (td.innerHTML !== html) {
                 td.innerHTML = html;
-                if (flashCells) flashes.push(td);
+                // Silent columns (e.g. the ticking TTL cell) rewrite without a
+                // flash so per-second changes never look like live events.
+                if (flashCells && !(opts.silentCols || []).includes(ci)) flashes.push(td);
             }
         });
         tbody.appendChild(tr); // appending in order establishes the desired order
@@ -1399,40 +1459,13 @@ async function rejectDriver(id) {
     } catch (err) { toast(err.message, 'error'); }
 }
 
-async function resolveIncident(id) {
-    try {
-        await api('/api/admin/incidents/' + id + '/resolve', { method: 'POST' });
-        toast('Incident resolved.');
-        await refreshAll();
-    } catch (err) { toast(err.message, 'error'); }
-}
-
-async function rejectIncident(id) {
-    try {
-        await api('/api/admin/incidents/' + id + '/reject', { method: 'POST', body: JSON.stringify({}) });
-        toast('Incident rejected.');
-        await refreshAll();
-    } catch (err) { toast(err.message, 'error'); }
-}
-
 /* ── Incidents ───────────────────────────────────────────────── */
-// No human-review gate anymore — all incidents are visible in the list.
-// Only resolved/rejected are hidden from active lists.
-function isReviewable(r) {
-    const s = lifecycle(r);
-    return s !== 'RESOLVED' && s !== 'REJECTED';
-}
-
+// Lifecycle is fully time-based now: the TTL engine resolves each incident
+// when its duration ends and the server purges it 48h later. There are no
+// manual Resolve/Reject actions anymore — the row shows the countdown instead.
 function incidentActions(r) {
-    const s = lifecycle(r);
-    const done = s === 'RESOLVED' || s === 'REJECTED';
-    // Only show Resolve button for active incidents that aren't done
-    const resolveBtn = (!done && isReviewable(r))
-        ? '<button class="btn-primary" onclick="resolveIncident(\'' + esc(r.id) + '\')">Resolve</button>'
-        : '';
-    const reject = done ? '' : '<button class="btn-danger" onclick="rejectIncident(\'' + esc(r.id) + '\')">Reject</button>';
     const detail = '<button class="btn-ghost" onclick="showIncident(\'' + esc(r.id) + '\')">Details</button>';
-    return '<div class="row-actions">' + resolveBtn + reject + detail + '</div>';
+    return '<div class="row-actions">' + detail + '</div>';
 }
 
 function incidentCells(r) {
@@ -1446,6 +1479,7 @@ function incidentCells(r) {
         photo,
         esc(r.reporter_name || '—') + '<span class="cell-sub">' + esc(r.reporter_phone || '') + '</span>',
         badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)),
+        ttlCell(r),
         incidentActions(r)
     ];
 }
@@ -1465,8 +1499,9 @@ function renderIncidents() {
     const body = $('incidents-tbody');
     const fp = JSON.stringify(rows) + '|' + filter;
     if (stale(body, fp)) {
+        // Column 6 (TTL) ticks with time — update it silently (no flash).
         reconcileTbody(body, rows, (r) => r.id, incidentCells,
-            { cols: 7, empty: '🗺️ No incidents reported yet.' });
+            { cols: 8, empty: '🗺️ No incidents reported yet.', silentCols: [6] });
         commit(body, fp);
     }
     setText($('incidents-count'), rows.length + ' of ' + state.incidents.length);
@@ -1488,10 +1523,9 @@ function showIncident(id) {
         '<div class="mono" style="margin-top:10px">' + locationOf(r) + '<br>Reported ' + esc(fmtTime(r.created_at)) +
         ' by ' + esc(r.reporter_name || '—') + '</div>' +
         (r.photo_url ? '<img src="' + esc(r.photo_url) + '" alt="Incident photo">' : '') +
-        '<div class="row-actions" style="margin-top:16px">' +
-            '<button class="btn-primary" onclick="resolveIncident(\'' + esc(r.id) + '\');closeModal()">Resolve</button>' +
-            '<button class="btn-danger" onclick="rejectIncident(\'' + esc(r.id) + '\');closeModal()">Reject</button>' +
-        '</div>';
+        // Full time-based lifecycle: TTL, expiry, resolution and purge time.
+        // (No Resolve/Reject buttons — the server's clock decides everything.)
+        incidentTtlDetail(r);
     $('modal').classList.add('open');
 }
 

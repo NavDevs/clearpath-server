@@ -431,7 +431,9 @@ app.get('/api/admin/incidents', authMiddleware, requireRole('admin'), async (req
     LEFT JOIN users u ON r.user_id = u.id
     ORDER BY r.created_at DESC
   `);
-  res.json(incidents);
+  // withExpiry adds ttl_hours / expires_at / (when resolved) removes_at so the
+  // dashboard can show the full time-based lifecycle without clock math.
+  res.json(incidents.map(withExpiry));
 });
 
 // Get all dispatches (for admin)
@@ -490,7 +492,7 @@ app.patch('/api/admin/dispatches/:id/status', authMiddleware, requireRole('admin
     await dbRun('UPDATE road_reports SET lifecycle_state = ?, status = ? WHERE id = ?',
       [nextState, 'pending', dispatch.report_id]);
     incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
-    if (incident) io.emit('report_updated', incident);
+    if (incident) io.emit('report_updated', withExpiry(incident));
   }
 
   const updated = await dbGet(`
@@ -509,26 +511,10 @@ app.patch('/api/admin/dispatches/:id/status', authMiddleware, requireRole('admin
   res.json({ dispatch: updated, incident });
 });
 
-// Update incident status (admin). Resolving also retires any still-unclaimed
-// emergency request so drivers stop seeing it.
-app.patch('/api/admin/incidents/:id/status', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { status, lifecycle_state } = req.body;
-  if (status) {
-    await dbRun('UPDATE road_reports SET status = ? WHERE id = ?', [status, req.params.id]);
-  }
-  if (lifecycle_state) {
-    await dbRun('UPDATE road_reports SET lifecycle_state = ? WHERE id = ?', [lifecycle_state, req.params.id]);
-  }
-  if (lifecycle_state === 'RESOLVED' || status === 'resolved') {
-    // Incident is done: retire unclaimed dispatches AND release any driver
-    // still responding, so stats/trips/dispatch lists stay consistent.
-    await cancelOpenDispatches(req.params.id, 'resolved');
-  }
-  const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', withExpiry(updated));
-  notifyAdmin();
-  res.json(updated);
-});
+// Incident state transitions are TIME-BASED only: the TTL engine resolves
+// each incident when its duration ends, and the purge job hard-deletes it 48h
+// later. Manual status/lifecycle/resolve/reject endpoints were removed on
+// purpose — nothing human approves an incident's lifecycle anymore.
 
 // Admin: Re-activate an incident and (for accident/fire) ensure a dispatch exists
 app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin'), async (req, res) => {
@@ -537,10 +523,10 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
     return res.status(404).json({ error: 'Incident not found' });
   }
 
-  await dbRun("UPDATE road_reports SET lifecycle_state = 'ACTIVE', status = 'pending' WHERE id = ?", [req.params.id]);
+  await dbRun("UPDATE road_reports SET lifecycle_state = 'ACTIVE', status = 'pending', resolved_at = NULL WHERE id = ?", [req.params.id]);
   let updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', updatedReport);
-  io.emit('new_incident', updatedReport);
+  io.emit('report_updated', withExpiry(updatedReport));
+  io.emit('new_incident', withExpiry(updatedReport));
 
   // Only accident/fire create Signal-Aid dispatches.
   const norm = String(report.type || '').toLowerCase();
@@ -572,7 +558,7 @@ app.post('/api/admin/incidents/:id/verify', authMiddleware, requireRole('admin')
       WHERE d.id = ?`, [dispatchId]
     );
     updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-    io.emit('report_updated', updatedReport);
+    io.emit('report_updated', withExpiry(updatedReport));
     io.emit('dispatch.created', fullDispatch);
   }
   notifyAdmin();
@@ -627,7 +613,7 @@ async function releaseDriverWork(userId, reason = 'driver_unavailable') {
             [dispatch.report_id]
           );
           const report = await dbGet('SELECT * FROM road_reports WHERE id = ?', [dispatch.report_id]);
-          if (report) io.emit('report_updated', report);
+          if (report) io.emit('report_updated', withExpiry(report));
         }
         const payload = await getDispatchPayload(dispatch.id);
         if (payload) io.emit('dispatch.created', payload);
@@ -637,28 +623,6 @@ async function releaseDriverWork(userId, reason = 'driver_unavailable') {
     console.log(`[ClearPath] Released trip ${t.id} (${reason})`);
   }
 }
-
-// Admin: Resolve incident
-app.post('/api/admin/incidents/:id/resolve', authMiddleware, requireRole('admin'), async (req, res) => {
-  const report = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  if (!report) return res.status(404).json({ error: 'Incident not found' });
-  await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [req.params.id]);
-  await cancelOpenDispatches(req.params.id, 'resolved');
-  const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', withExpiry(updated));
-  notifyAdmin();
-  res.json(updated);
-});
-
-// Admin: Reject incident
-app.post('/api/admin/incidents/:id/reject', authMiddleware, requireRole('admin'), async (req, res) => {
-  await dbRun("UPDATE road_reports SET lifecycle_state = 'REJECTED', status = 'rejected' WHERE id = ?", [req.params.id]);
-  await cancelOpenDispatches(req.params.id, 'rejected');
-  const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', withExpiry(updated));
-  notifyAdmin();
-  res.json(updated);
-});
 
 // Admin: wipe all operational data (incidents, trips, dispatches, approvals, users
 // and uploaded photos) so the system can be demoed from a clean slate.
@@ -730,12 +694,22 @@ const DURATION_HOURS = {
   flooding: 6, pothole: 48, roadwork: 4, other: 4, default: 4,
 };
 
+// Once an incident is RESOLVED it stays on the dashboard for this long (as a
+// resolved row) before the purge job hard-deletes it from the database — and
+// its photo from storage — forever.
+const RESOLVED_RETENTION_HRS = 48;
+
 function durationHoursFor(type) {
   return DURATION_HOURS[String(type || '').toLowerCase()] || DURATION_HOURS.default;
 }
 
 function toMs(createdAt) {
-  return new Date(createdAt).getTime();
+  if (createdAt instanceof Date) return createdAt.getTime();
+  const s = String(createdAt);
+  // Zoneless timestamps ("YYYY-MM-DD HH:MM:SS") are UTC wall-clocks (SQLite
+  // CURRENT_TIMESTAMP) — pin them to UTC instead of the machine timezone.
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) return new Date(s).getTime();
+  return new Date(s.replace(' ', 'T') + 'Z').getTime();
 }
 
 // Backend-computed expiry for countdowns: resolutionTime = reportedTime + duration.
@@ -746,11 +720,20 @@ function withExpiry(row) {
   if (!row || !base) return row;
   const ttlMs = durationHoursFor(row.type) * 3600000;
   const expiresAtMs = toMs(base) + ttlMs;
-  return {
+  const out = {
     ...row,
+    ttl_hours: durationHoursFor(row.type),
     expires_at: new Date(expiresAtMs).toISOString(),
     remaining_seconds: Math.max(0, Math.round((expiresAtMs - Date.now()) / 1000)),
   };
+  // Retention clock (resolved rows only): how long until the row is purged.
+  const resolvedMs = row.resolved_at ? toMs(row.resolved_at) : NaN;
+  if (!isNaN(resolvedMs)) {
+    const removesMs = resolvedMs + RESOLVED_RETENTION_HRS * 3600000;
+    out.removes_at = new Date(removesMs).toISOString();
+    out.retention_seconds = Math.max(0, Math.round((removesMs - Date.now()) / 1000));
+  }
+  return out;
 }
 
 app.post('/api/reports', upload.single('photo'), async (req, res) => {
@@ -809,7 +792,7 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     await dbRun('UPDATE users SET points = points + ? WHERE id = ?', [pts, user_id]);
 
     // Keep the map feed to report updates — dispatches travel on their own channel.
-    io.emit('report_updated', newReport);
+    io.emit('report_updated', withExpiry(newReport));
 
   // Critical emergencies dispatch immediately from the citizen's explicit
   // accident/fire category — no verification step, no human wait. Normal
@@ -825,8 +808,9 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     io.emit('points_updated', { user_id, points: pts });
     notifyAdmin();
 
-    // Return the ACTIVE report immediately to the citizen's app
-    res.json(newReport);
+    // Return the ACTIVE report immediately to the citizen's app (with its
+    // server-computed expiry so the phone can hide it exactly on time).
+    res.json(withExpiry(newReport));
   } catch (err) {
     console.error('POST /api/reports failed:', err);
     res.status(400).json({ error: 'Could not submit report. Please try again.' });
@@ -838,7 +822,7 @@ app.post('/api/reports/:id/status', async (req, res) => {
   const { status } = req.body;
   await dbRun('UPDATE road_reports SET status = ? WHERE id = ?', [status, req.params.id]);
   const updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', updatedReport);
+  io.emit('report_updated', withExpiry(updatedReport));
   notifyAdmin();
   res.json(updatedReport);
 });
@@ -990,7 +974,7 @@ app.post('/api/trips/:id/location', async (req, res) => {
     if (incident && incident.lifecycle_state === 'ACCEPTED') {
       await dbRun("UPDATE road_reports SET lifecycle_state = 'EN_ROUTE', status = 'pending' WHERE id = ?", [trip.report_id]);
       const updated = await dbGet('SELECT * FROM road_reports WHERE id = ?', [trip.report_id]);
-      io.emit('report_updated', updated);
+      io.emit('report_updated', withExpiry(updated));
     }
   }
   io.emit('trip.location_updated', { tripId: req.params.id, latitude, longitude, driver_id: trip.driver_id });
@@ -1037,7 +1021,7 @@ app.patch('/api/trips/:id/status', async (req, res) => {
     if (updatedTrip.report_id) {
       await dbRun("UPDATE road_reports SET lifecycle_state = 'ARRIVED', status = 'pending' WHERE id = ?", [updatedTrip.report_id]);
       const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
-      if (incident) io.emit('report_updated', incident);
+      if (incident) io.emit('report_updated', withExpiry(incident));
     }
     io.emit('trip.arrived', { ...updatedTrip, proximityKm, farFromScene: proximityKm != null && proximityKm > 2 });
   } else if (status === 'completed') {
@@ -1047,7 +1031,7 @@ app.patch('/api/trips/:id/status', async (req, res) => {
     if (updatedTrip.report_id) {
       await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [updatedTrip.report_id]);
       const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
-      if (incident) io.emit('report_updated', incident);
+      if (incident) io.emit('report_updated', withExpiry(incident));
     }
     if (updatedTrip.driver_id) {
       await dbRun("UPDATE users SET availability = 'AVAILABLE' WHERE id = ?", [updatedTrip.driver_id]);
@@ -1230,14 +1214,16 @@ app.get('/api/trips/active/:driver_id', async (req, res) => {
 });
 
 
-// â”€â”€ CLEARPATH AUTO-EXPIRY ENGINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── CLEARPATH AUTO-EXPIRY ENGINE ─────────────────────────────
 // resolutionTime = reportedTime + configuredDuration (per issue type).
 // Runs every 2 minutes so issues vanish on time even if every app is closed.
 // An issue stays visible until its duration expires; the backend — never the
-// frontend — marks it RESOLVED. Incidents a driver is actively handling
-// (ACCEPTED / EN_ROUTE / ARRIVED) are never pulled out from under them... but a
-// response that was never finished (app force-closed, session lost) must not
-// stay BUSY/en_route forever either — after this grace it is force-closed.
+// frontend — marks it RESOLVED and stamps resolved_at, which starts the 48h
+// retention window that ends in a hard purge (runPurgeEngine below).
+// Incidents a driver is actively handling (ACCEPTED / EN_ROUTE / ARRIVED) are
+// never pulled out from under them... but a response that was never finished
+// (app force-closed, session lost) must not stay BUSY/en_route forever either —
+// after this grace it is force-closed.
 const HANDLED_STATES = ['ACCEPTED', 'EN_ROUTE', 'ARRIVED'];
 const HANDLED_FORCE_GRACE_HRS = 2;
 
@@ -1255,7 +1241,7 @@ async function runExpiryEngine() {
       // was abandoned past the grace window, which would leave the driver BUSY,
       // the trip open and the report stuck in a handled state forever.
       if (ageHrs < ttlHrs + HANDLED_FORCE_GRACE_HRS) continue;
-      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?", [r.id]);
       // Completes the open trip, frees the driver and cancels the dispatch.
       await cancelOpenDispatches(r.id, 'expired');
       const forced = await dbGet('SELECT * FROM road_reports WHERE id = ?', [r.id]);
@@ -1266,7 +1252,7 @@ async function runExpiryEngine() {
 
     if (ageHrs < ttlHrs) continue;
 
-    await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [r.id]);
+    await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?", [r.id]);
 
     // A still-unclaimed emergency request dies with its incident so drivers
     // stop seeing it; claimed ones already moved past 'available'.
@@ -1276,6 +1262,44 @@ async function runExpiryEngine() {
     io.emit('report_updated', withExpiry(updated));
     console.log(`[ClearPath] Auto-resolved: ${r.type} (${ageHrs.toFixed(1)}h old, was ${r.lifecycle_state})`);
   }
+}
+
+// ── RETENTION PURGE (48h after RESOLVED) ──────────────────────
+// A resolved incident stays on the dashboard for 48 hours, then disappears
+// forever: its photo is dropped from storage and the row is hard-deleted from
+// the database. Same 2-minute sweep as the expiry engine.
+async function runPurgeEngine() {
+  const done = await dbAll(
+    "SELECT id, photo_url, resolved_at FROM road_reports WHERE lifecycle_state IN ('RESOLVED', 'REJECTED') AND resolved_at IS NOT NULL"
+  );
+  const cutoff = Date.now() - RESOLVED_RETENTION_HRS * 3600000;
+  let purged = 0;
+
+  for (const r of done) {
+    const resolvedMs = toMs(r.resolved_at);
+    if (isNaN(resolvedMs) || resolvedMs > cutoff) continue;
+
+    if (supabase && r.photo_url) {
+      try {
+        // photo_url is the public URL; the object key is its last path segment
+        // (uploaded as "<reportId>-<ts><ext>").
+        const fileName = decodeURIComponent(String(r.photo_url).split('/').pop() || '');
+        if (fileName) {
+          const { error } = await supabase.storage.from(BUCKET).remove([fileName]);
+          if (error) console.warn('[ClearPath] Photo purge failed:', error.message || error);
+        }
+      } catch (err) {
+        console.warn('[ClearPath] Photo purge error:', err.message || err);
+      }
+    }
+
+    await dbRun('DELETE FROM road_reports WHERE id = ?', [r.id]);
+    io.emit('report_deleted', { id: r.id });
+    purged += 1;
+    console.log(`[ClearPath] Purged incident ${r.id} (48h retention ended)`);
+  }
+
+  if (purged) notifyAdmin();
 }
 
 // Safety net: a critical accident/fire must never sit undispatched because the
@@ -1304,11 +1328,21 @@ async function runDispatchSweeper() {
 
 // The sweeps must never take the server down.
 const runSweepsSafely = () =>
-  Promise.all([runExpiryEngine(), runDispatchSweeper()])
+  Promise.all([runExpiryEngine(), runDispatchSweeper(), runPurgeEngine()])
     .catch((err) => console.error('[ClearPath] Sweep failed:', err.message || err));
-initPromise.then(() => { runSweepsSafely(); setInterval(runSweepsSafely, 2 * 60 * 1000); });
+initPromise.then(async () => {
+  // Legacy rows resolved before resolved_at existed: start their 48h clock now
+  // so even those eventually get purged instead of lingering forever.
+  try {
+    await dbRun("UPDATE road_reports SET resolved_at = CURRENT_TIMESTAMP WHERE lifecycle_state IN ('RESOLVED', 'REJECTED') AND resolved_at IS NULL");
+  } catch (err) {
+    console.error('[ClearPath] resolved_at backfill failed:', err.message || err);
+  }
+  runSweepsSafely();
+  setInterval(runSweepsSafely, 2 * 60 * 1000);
+});
 
-// â”€â”€ HEALTH CHECK (for keep-alive pings) â”€â”€
+// ── HEALTH CHECK (for keep-alive pings) ──
 // Health check (for keep-alive pings). `dataEpoch` increments on every full
 // data reset so the mobile apps can detect a wipe and clear their local data.
 app.get('/health', async (req, res) => {
@@ -1322,9 +1356,9 @@ app.get('/health', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log('\nðŸ›£ï¸  ClearPath Command Server v1.0');
+  console.log('\n=== ClearPath Command Server v1.0 ===');
   console.log(`   Dashboard : http://localhost:${PORT}`);
   console.log(`   Incidents : post -> visible -> auto-resolve | dispatch: immediate on accident/fire`);
-  console.log(`   TTL rules : accident=2h | congestion=3h | blocked=4h | flooding=6h | pothole=48h\n`);
+  console.log(`   TTL rules : accident=2h | fire=1h | congestion=3h | blocked=4h | flooding=6h | pothole=48h | roadwork/other=4h | resolved retention=48h\n`);
 });
 
