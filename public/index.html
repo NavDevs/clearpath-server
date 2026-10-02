@@ -9,6 +9,14 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        // Apply the saved theme before first paint so there is no light flash.
+        (function () {
+            var saved = null;
+            try { saved = localStorage.getItem('clearpath_theme'); } catch (e) {}
+            document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+        })();
+    </script>
     <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -529,12 +537,12 @@ tbody tr.row-new:nth-child(n+11) { animation-delay: 0.3s; }
    cues tell you WHAT moved: a top sync sweep, a soft flash behind the
    exact cell that changed, and a pop on any number that ticked. */
 .sync-bar {
-    position: fixed; top: 0; left: 0; width: 38%; height: 3px; z-index: 5000;
+    position: fixed; top: 0; left: 0; width: 38%; height: 2px; z-index: 5000;
     background: var(--grad); border-radius: 0 3px 3px 0; opacity: 0;
     transform: translateX(-100%); pointer-events: none;
     transition: opacity 0.3s ease;
 }
-.sync-bar.syncing { opacity: 1; animation: syncSweep 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.sync-bar.syncing { opacity: 1; animation: syncSweep 0.85s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
 @keyframes syncSweep { from { transform: translateX(-100%); } to { transform: translateX(365%); } }
 
 @keyframes cellFlash {
@@ -556,6 +564,196 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
 
 /* calmer, finished-looking empty states */
 .empty-row td { padding: 44px 20px !important; letter-spacing: 0.01em; }
+
+/* ── ROW DETAILS: every row is clickable ─────────────────────── */
+tbody tr[data-key] { cursor: pointer; }
+tbody tr[data-key]:hover td { background: rgba(79, 70, 229, 0.035); }
+tbody tr[data-key]:hover td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
+@keyframes rowDone {
+    0% { background-color: rgba(16, 185, 129, 0.20); }
+    100% { background-color: transparent; }
+}
+tbody tr.row-done td { animation: rowDone 1.3s ease-out; }
+
+.detail-hero {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 16px; border-radius: 14px; border: 1px solid var(--primary-100);
+    background: linear-gradient(120deg, var(--primary-50), transparent 75%);
+}
+.detail-hero-icon {
+    width: 46px; height: 46px; flex-shrink: 0; border-radius: 13px; font-size: 21px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--grad); color: #fff; box-shadow: 0 6px 16px rgba(79, 70, 229, 0.30);
+}
+.detail-hero-text { flex: 1; min-width: 170px; }
+.detail-title { font-size: 15px; font-weight: 800; color: var(--fg); letter-spacing: -0.02em; line-height: 1.3; }
+.detail-sub { font-size: 11.5px; color: var(--muted-fg); margin-top: 4px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.detail-item {
+    padding: 11px 13px; border: 1px solid var(--border-soft); border-radius: 11px;
+    background: var(--bg); animation: riseIn 0.32s ease-out backwards;
+}
+.detail-item:nth-child(1) { animation-delay: 0.03s; }
+.detail-item:nth-child(2) { animation-delay: 0.06s; }
+.detail-item:nth-child(3) { animation-delay: 0.09s; }
+.detail-item:nth-child(4) { animation-delay: 0.12s; }
+.detail-item:nth-child(5) { animation-delay: 0.15s; }
+.detail-item:nth-child(6) { animation-delay: 0.18s; }
+.detail-item:nth-child(7) { animation-delay: 0.21s; }
+.detail-item:nth-child(8) { animation-delay: 0.24s; }
+.detail-item:nth-child(n+9) { animation-delay: 0.27s; }
+.detail-item.wide { grid-column: 1 / -1; }
+.detail-label {
+    display: block; font-size: 9.5px; font-weight: 800; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted-fg); margin-bottom: 4px;
+}
+.detail-value { font-size: 13px; font-weight: 600; color: var(--fg); word-break: break-word; }
+.detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+@media (max-width: 640px) { .detail-grid { grid-template-columns: 1fr; } }
+
+/* ── THEME SWITCH (light ⇄ dark) ─────────────────────────────── */
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #090C14; --fg: #E9EDFA; --muted-fg: #8A93AC;
+    --primary: #7C84FF; --secondary: #A78BFA;
+    --primary-50: rgba(124, 132, 255, 0.10); --primary-100: rgba(124, 132, 255, 0.26);
+    --border: #242C44; --border-soft: #1A2032; --card: #101522;
+    --success: #34D399; --success-bg: rgba(52, 211, 153, 0.11); --success-border: rgba(52, 211, 153, 0.30);
+    --warn: #FBBF24; --warn-bg: rgba(251, 191, 36, 0.11); --warn-border: rgba(251, 191, 36, 0.30);
+    --info: #60A5FA; --info-bg: rgba(96, 165, 250, 0.11); --info-border: rgba(96, 165, 250, 0.30);
+    --danger: #F87171; --danger-bg: rgba(248, 113, 113, 0.11); --danger-border: rgba(248, 113, 113, 0.32);
+    --shadow-soft: 0 4px 24px -2px rgba(0, 0, 0, 0.45);
+    --shadow-hover: 0 12px 30px -6px rgba(0, 0, 0, 0.55), 0 8px 12px -8px rgba(0, 0, 0, 0.5);
+    --shadow-btn: 0 4px 16px 0 rgba(99, 102, 241, 0.38);
+    --grad: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+}
+[data-theme="dark"] { background: var(--bg); color: var(--fg); }
+[data-theme="dark"] body { background: var(--bg); color: var(--fg); }
+[data-theme="dark"] body::before {
+    background:
+        radial-gradient(640px 420px at 92% -10%, rgba(139, 92, 246, 0.14), transparent 65%),
+        radial-gradient(720px 480px at -12% 38%, rgba(99, 102, 241, 0.10), transparent 65%);
+}
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2A3350; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #3B466B; }
+
+/* login */
+[data-theme="dark"] .login-screen { background: linear-gradient(160deg, #0C0F1C 0%, #090C14 48%, #0D0B1E 100%); }
+[data-theme="dark"] .login-panel {
+    background: #10141F; border-color: #232B44;
+    box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.65), 0 0 44px -22px rgba(124, 132, 255, 0.45);
+}
+[data-theme="dark"] .login-brand-text { color: #EEF1FC; }
+[data-theme="dark"] .login-field { color: #9AA3BD; }
+[data-theme="dark"] .login-field input { background: #0B0F1A; border-color: #242C44; color: #E9EDFA; }
+[data-theme="dark"] .login-field input::placeholder { color: #5D6684; }
+[data-theme="dark"] .login-field input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(124, 132, 255, 0.18); }
+
+/* sidebar */
+[data-theme="dark"] .sidebar { background: #0C101A; border-right-color: #1C2337; box-shadow: 4px 0 26px rgba(0, 0, 0, 0.35); }
+[data-theme="dark"] .sidebar-logo-text { color: #EEF1FC; }
+[data-theme="dark"] .sidebar-version { color: #5D6684; }
+[data-theme="dark"] .sidebar-label { color: #5D6684; }
+[data-theme="dark"] .sidebar-link { color: #9AA3BD; }
+[data-theme="dark"] .sidebar-link:hover { background: #141A2B; color: #EEF1FC; }
+[data-theme="dark"] .sidebar-link.active { background: linear-gradient(100deg, rgba(124, 132, 255, 0.14), rgba(167, 139, 250, 0.10)); border-color: rgba(124, 132, 255, 0.30); }
+[data-theme="dark"] .sidebar-link .count { background: #1A2136; color: #9AA3BD; }
+[data-theme="dark"] .sidebar-link .count.alert { background: rgba(251, 191, 36, 0.16); color: #FBBF24; }
+[data-theme="dark"] .ttl-grid { color: #6E7794; }
+[data-theme="dark"] .ttl-grid span { color: #C3CADF; }
+[data-theme="dark"] .sidebar-live { color: #34D399; }
+[data-theme="dark"] .sidebar-scrim { background: rgba(3, 5, 10, 0.6); }
+
+/* header + buttons */
+[data-theme="dark"] .header-title { color: #EEF1FC; }
+[data-theme="dark"] .header-time { background: #101522; color: #9AA3BD; border-color: #242C44; }
+[data-theme="dark"] .logout-btn, [data-theme="dark"] .btn-ghost, [data-theme="dark"] .menu-btn {
+    background: #12172A; border-color: #242C44; color: #AEB6CE;
+}
+[data-theme="dark"] .logout-btn:hover, [data-theme="dark"] .btn-ghost:hover, [data-theme="dark"] .menu-btn:hover {
+    background: #171D33; border-color: #39436A; color: #EEF1FC;
+}
+[data-theme="dark"] .btn-danger:hover { background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.5); color: #FCA5A5; }
+[data-theme="dark"] .reset-btn:hover { background: rgba(248, 113, 113, 0.16); border-color: rgba(248, 113, 113, 0.45); color: #FCA5A5; }
+
+/* hero banner */
+[data-theme="dark"] .signal-banner {
+    border-color: rgba(124, 132, 255, 0.26);
+    background: linear-gradient(115deg, rgba(99, 102, 241, 0.14) 0%, rgba(139, 92, 246, 0.10) 55%, rgba(79, 70, 229, 0.06) 100%);
+    box-shadow: 0 10px 34px -18px rgba(99, 102, 241, 0.45);
+}
+[data-theme="dark"] .signal-banner::before {
+    background: linear-gradient(90deg, transparent 49.9%, rgba(124, 132, 255, 0.10) 50%, transparent 50.1%),
+        linear-gradient(rgba(124, 132, 255, 0.07) 1px, transparent 1px);
+    background-size: 80px 100%, 100% 28px;
+}
+[data-theme="dark"] .signal-title { color: #EEF1FC; }
+[data-theme="dark"] .signal-coordinate { color: rgba(148, 156, 255, 0.6); }
+[data-theme="dark"] .signal-visual { border-color: rgba(129, 140, 248, 0.30); }
+
+/* stat cards */
+[data-theme="dark"] .stat-card:nth-child(1) .stat-icon { background: rgba(124, 132, 255, 0.14); color: #8C93FF; }
+[data-theme="dark"] .stat-card:nth-child(2) .stat-icon { background: rgba(52, 211, 153, 0.13); color: #34D399; }
+[data-theme="dark"] .stat-card:nth-child(3) .stat-icon { background: rgba(96, 165, 250, 0.13); color: #60A5FA; }
+[data-theme="dark"] .stat-card:nth-child(4) .stat-icon { background: rgba(251, 191, 36, 0.13); color: #FBBF24; }
+[data-theme="dark"] .stat-card:nth-child(1) .stat-value { color: #8C93FF; }
+[data-theme="dark"] .stat-card:nth-child(2) .stat-value { color: #34D399; }
+[data-theme="dark"] .stat-card:nth-child(3) .stat-value { color: #60A5FA; }
+[data-theme="dark"] .stat-card:nth-child(4) .stat-value { color: #FBBF24; }
+[data-theme="dark"] .stat-card:hover { border-color: rgba(124, 132, 255, 0.35); }
+[data-theme="dark"] .stat-sub { color: #6E7794; }
+
+/* tables */
+[data-theme="dark"] thead { background: #0C101A; }
+[data-theme="dark"] th { background: #0C101A; color: #7E87A3; border-bottom-color: #1C2337; box-shadow: 0 1px 0 #1C2337; }
+[data-theme="dark"] td { color: #B9C1D8; border-top-color: #1A2032; }
+[data-theme="dark"] tbody tr[data-key]:hover td { background: rgba(124, 132, 255, 0.06); }
+[data-theme="dark"] .empty-row td { color: #6E7794; }
+[data-theme="dark"] .mono { color: #8A93AC; }
+[data-theme="dark"] .cell-strong { color: #EEF1FC; }
+[data-theme="dark"] .cell-sub { color: #6E7794; }
+[data-theme="dark"] .desc-cell { color: #A6AEC8; }
+
+/* badges (non-variable combos) */
+[data-theme="dark"] .badge { background: #1A2136; color: #A7B0C8; border-color: #2A3350; }
+[data-theme="dark"] .badge-RESOLVED, [data-theme="dark"] .badge-resolved,
+[data-theme="dark"] .badge-completed, [data-theme="dark"] .badge-available { background: #1A2136; color: #A7B0C8; border-color: #2A3350; }
+[data-theme="dark"] .badge-citizen { background: #1A2136; color: #A7B0C8; border-color: #2A3350; }
+[data-theme="dark"] .badge-OFFLINE { background: #1A2136; color: #8A93AC; border-color: #2A3350; }
+
+/* controls + content bits */
+[data-theme="dark"] .status-select, [data-theme="dark"] .select-inline {
+    background-color: #0E1322; color: #C3CADF; border-color: #242C44;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238A93AC' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+}
+[data-theme="dark"] .status-select:focus, [data-theme="dark"] .select-inline:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(124, 132, 255, 0.18); }
+[data-theme="dark"] img.report-photo { background: #1A2136; border-color: #2A3350; }
+[data-theme="dark"] .type-chip { color: #EEF1FC; }
+[data-theme="dark"] .review-title { color: #EEF1FC; }
+
+/* modal + toast */
+[data-theme="dark"] .modal-overlay { background: rgba(3, 5, 10, 0.66); }
+[data-theme="dark"] .modal {
+    background: #111623; border-color: #232B44;
+    box-shadow: 0 30px 70px -20px rgba(0, 0, 0, 0.75), 0 0 44px -22px rgba(124, 132, 255, 0.5);
+}
+[data-theme="dark"] .modal-title { color: #EEF1FC; }
+[data-theme="dark"] .modal textarea { background: #0B0F1A; border-color: #242C44; color: #E9EDFA; }
+[data-theme="dark"] .toast { background: #151B2C; color: #C9D0E4; border-color: #2A3350; }
+[data-theme="dark"] .toast.error { background: rgba(248, 113, 113, 0.12); color: #FCA5A5; border-color: rgba(248, 113, 113, 0.4); }
+[data-theme="dark"] .toast.ok { background: rgba(52, 211, 153, 0.12); color: #6EE7B7; border-color: rgba(52, 211, 153, 0.4); }
+[data-theme="dark"] .ttl-detail .ttl-row { color: #9AA3BD; }
+[data-theme="dark"] .ttl-detail .ttl-row span:last-child { color: #EEF1FC; }
+[data-theme="dark"] .ttl-live { color: #8C93FF; }
+[data-theme="dark"] .ttl-now { color: #FBBF24; }
+[data-theme="dark"] .ttl-purge { color: #8A93AC; }
+
+/* smooth crossfade between themes on the main surfaces */
+body, .sidebar, .card, .stat-card, .modal, .toast, th, td, .header-time,
+.logout-btn, .btn-ghost, .menu-btn, .status-select, .select-inline,
+.login-screen, .login-panel, .login-field input, .signal-banner {
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
 
 /* ── RESPONSIVE ────────────────────────────────────────── */
 @media (max-width: 1240px) {
@@ -650,7 +848,7 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
                 <div>🔧 Road Work</div><div><span>4 hrs</span></div>
                 <div>⚠️ Other</div><div><span>4 hrs</span></div>
             </div>
-            <div style="margin-top:8px;font-size:10px;color:#94A3B8;line-height:1.5">Resolved incidents stay 48 hrs, then are purged forever.</div>
+            <div style="margin-top:8px;font-size:10px;color:var(--muted-fg);line-height:1.5">Resolved incidents stay 48 hrs, then are purged forever.</div>
         </div>
 
         <div class="sidebar-footer">
@@ -669,6 +867,7 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
             <div class="header-actions">
                 <button class="menu-btn" id="menu-btn" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
                 <div class="header-time" id="live-clock"></div>
+                <button class="logout-btn" id="theme-btn" type="button" title="Switch between light and dark mode">🌙 Dark</button>
                 <button class="logout-btn" id="logout-btn" type="button">↩ Logout</button>
                 <button class="btn-refresh" id="refresh-btn" type="button">↻ &nbsp;Refresh</button>
             </div>
@@ -758,8 +957,8 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
                 </div>
                 <div class="card"><div class="card-inner">
                     <table>
-                        <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Reporter</th><th>Lifecycle</th><th>TTL</th><th>Actions</th></tr></thead>
-                        <tbody id="incidents-tbody"><tr class="empty-row"><td colspan="8">Loading…</td></tr></tbody>
+                        <thead><tr><th>Type</th><th>Description</th><th>Location</th><th>Photo</th><th>Reporter</th><th>Lifecycle</th><th>TTL</th></tr></thead>
+                        <tbody id="incidents-tbody"><tr class="empty-row"><td colspan="7">Loading…</td></tr></tbody>
                     </table>
                 </div></div>
             </div>
@@ -1166,6 +1365,22 @@ $('logout-btn').addEventListener('click', () => {
     $('login-message').textContent = '';
 });
 
+/* ── Theme: light ⇄ dark, persisted across reloads ─────────────
+   The <head> script already applied the saved value before first paint;
+   here we only keep the toggle button in sync and flip it on click. */
+function applyTheme() {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    $('theme-btn').textContent = dark ? '☀️ Light' : '🌙 Dark';
+    $('theme-btn').title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+}
+applyTheme();
+$('theme-btn').addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('clearpath_theme', next); } catch (e) {}
+    applyTheme();
+});
+
 /* ── Navigation ──────────────────────────────────────────────── */
 function showView(view) {
     state.view = view;
@@ -1265,21 +1480,47 @@ $('refresh-btn').addEventListener('click', async () => {
 /* ── Data loading ────────────────────────────────────────────── */
 let refreshInFlight = false;
 let refreshQueued = false;
+
+/* The sync sweep only appears when a request is actually slow (>250ms).
+   Fast actions complete silently: a toast plus a green pulse on the exact
+   row that changed — the page itself never looks like it is reloading. */
 let syncShownAt = 0;
 let syncHideTimer = null;
+let syncShowTimer = null;
 
 function showSync() {
     clearTimeout(syncHideTimer);
-    if (!syncShownAt) syncShownAt = Date.now();
-    $('sync-bar').classList.add('syncing');
+    clearTimeout(syncShowTimer);
+    syncShowTimer = setTimeout(() => {
+        if (!syncShownAt) syncShownAt = Date.now();
+        $('sync-bar').classList.add('syncing');
+    }, 250);
 }
 function hideSync() {
-    const wait = Math.max(0, 450 - (Date.now() - syncShownAt));
-    clearTimeout(syncHideTimer);
-    syncHideTimer = setTimeout(() => {
-        $('sync-bar').classList.remove('syncing');
-        syncShownAt = 0;
-    }, wait);
+    clearTimeout(syncShowTimer);
+    if (syncShownAt) {
+        const wait = Math.max(0, 450 - (Date.now() - syncShownAt));
+        clearTimeout(syncHideTimer);
+        syncHideTimer = setTimeout(() => {
+            $('sync-bar').classList.remove('syncing');
+            syncShownAt = 0;
+        }, wait);
+        return;
+    }
+    $('sync-bar').classList.remove('syncing');
+}
+
+/* Targeted feedback: pulse the row an action touched (green sweep) so the
+   eye lands exactly where the change happened instead of scanning the page. */
+function pulseRow(key) {
+    const sel = 'tbody tr[data-key="' +
+        ((window.CSS && CSS.escape) ? CSS.escape(String(key)) : String(key).replace(/["\\]/g, '\\$&')) + '"]';
+    document.querySelectorAll(sel).forEach((tr) => {
+        tr.classList.remove('row-done');
+        void tr.offsetWidth;
+        tr.classList.add('row-done');
+        tr.addEventListener('animationend', () => tr.classList.remove('row-done'), { once: true });
+    });
 }
 
 async function refreshAll() {
@@ -1444,6 +1685,7 @@ async function approveDriver(id) {
         const res = await api('/api/admin/driver-requests/' + id + '/approve', { method: 'POST' });
         toast((res && res.message) || 'Driver approved.');
         await refreshAll();
+        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1456,18 +1698,14 @@ async function rejectDriver(id) {
         });
         toast('Driver rejected.');
         await refreshAll();
+        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
 /* ── Incidents ───────────────────────────────────────────────── */
-// Lifecycle is fully time-based now: the TTL engine resolves each incident
-// when its duration ends and the server purges it 48h later. There are no
-// manual Resolve/Reject actions anymore — the row shows the countdown instead.
-function incidentActions(r) {
-    const detail = '<button class="btn-ghost" onclick="showIncident(\'' + esc(r.id) + '\')">Details</button>';
-    return '<div class="row-actions">' + detail + '</div>';
-}
-
+// Lifecycle is fully time-based: the TTL engine resolves each incident when
+// its duration ends and the server purges it 48h later. There are no action
+// buttons at all — click the row to see the full server-side timeline.
 function incidentCells(r) {
     const photo = r.photo_url
         ? '<img src="' + esc(r.photo_url) + '" class="report-photo" onclick="showPhoto(\'' + esc(r.photo_url) + '\')" title="Click to view" alt="Incident photo">'
@@ -1479,8 +1717,7 @@ function incidentCells(r) {
         photo,
         esc(r.reporter_name || '—') + '<span class="cell-sub">' + esc(r.reporter_phone || '') + '</span>',
         badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)),
-        ttlCell(r),
-        incidentActions(r)
+        ttlCell(r)
     ];
 }
 
@@ -1501,33 +1738,227 @@ function renderIncidents() {
     if (stale(body, fp)) {
         // Column 6 (TTL) ticks with time — update it silently (no flash).
         reconcileTbody(body, rows, (r) => r.id, incidentCells,
-            { cols: 8, empty: '🗺️ No incidents reported yet.', silentCols: [6] });
+            { cols: 7, empty: '🗺️ No incidents reported yet.', silentCols: [6] });
         commit(body, fp);
     }
     setText($('incidents-count'), rows.length + ' of ' + state.incidents.length);
 }
-
 $('incident-filter').addEventListener('change', renderIncidents);
 
+/* ── Row details: click ANY row → full detail card ─────────────
+   One modal, one layout: a hero (icon + heading + badges), a grid of
+   label/value items with a staggered rise-in, then optional extras
+   (photo, TTL timeline, map link). Buttons/selects inside cells keep
+   their own behaviour — the row click only fires on plain content. */
+function detailItem(label, value, wide) {
+    if (value == null || value === '') value = '—';
+    return '<div class="detail-item' + (wide ? ' wide' : '') + '">' +
+        '<span class="detail-label">' + esc(label) + '</span>' +
+        '<div class="detail-value">' + value + '</div></div>';
+}
 
+function openDetail(opts) {
+    $('modal-title').textContent = opts.title || 'Details';
+    $('modal-body').innerHTML =
+        '<div class="detail-hero">' +
+            '<div class="detail-hero-icon">' + opts.icon + '</div>' +
+            '<div class="detail-hero-text">' +
+                '<div class="detail-title">' + opts.heading + '</div>' +
+                '<div class="detail-sub">' + opts.sub + '</div>' +
+            '</div>' + (opts.badges || '') +
+        '</div>' +
+        '<div class="detail-grid">' + (opts.items || []).join('') + '</div>' +
+        (opts.extra || '');
+    $('modal').classList.add('open');
+}
 
-
+function mapLinkFor(lat, lon) {
+    if (lat == null || lon == null) return '';
+    return '<a class="mono" style="color:var(--primary)" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=' +
+        encodeURIComponent(lat) + '&mlon=' + encodeURIComponent(lon) +
+        '#map=16/' + encodeURIComponent(lat) + '/' + encodeURIComponent(lon) + '">open map ↗</a>';
+}
 
 function showIncident(id) {
     const r = state.incidents.find((i) => String(i.id) === String(id));
     if (!r) return;
-    $('modal-title').textContent = 'Incident · ' + lifecycleLabel(lifecycle(r));
-    $('modal-body').innerHTML =
-        '<div class="review-head">' + typeChip(r.type) + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</div>' +
-        '<p style="margin-top:10px;color:#334155">' + esc(r.description || 'No description provided') + '</p>' +
-        '<div class="mono" style="margin-top:10px">' + locationOf(r) + '<br>Reported ' + esc(fmtTime(r.created_at)) +
-        ' by ' + esc(r.reporter_name || '—') + '</div>' +
-        (r.photo_url ? '<img src="' + esc(r.photo_url) + '" alt="Incident photo">' : '') +
-        // Full time-based lifecycle: TTL, expiry, resolution and purge time.
-        // (No Resolve/Reject buttons — the server's clock decides everything.)
-        incidentTtlDetail(r);
-    $('modal').classList.add('open');
+    const coords = (r.latitude != null && r.longitude != null)
+        ? Number(r.latitude).toFixed(5) + ', ' + Number(r.longitude).toFixed(5) : '';
+    openDetail({
+        title: 'Incident · ' + lifecycleLabel(lifecycle(r)),
+        icon: TYPE_ICONS[String(r.type || '').toLowerCase()] || '⚠️',
+        heading: esc(r.description || (r.type || 'Incident') + ' incident'),
+        sub: 'Reported ' + esc(fmtTime(r.created_at)) + ' by ' + esc(r.reporter_name || 'unknown reporter'),
+        badges: badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)),
+        items: [
+            detailItem('Type', esc(r.type || '—')),
+            detailItem('Status', esc(r.status || '—')),
+            detailItem('Reporter', esc(r.reporter_name || '—') +
+                (r.reporter_phone ? '<span class="cell-sub">' + esc(r.reporter_phone) + '</span>' : '')),
+            detailItem('Location', locationOf(r)),
+            detailItem('Coordinates', coords
+                ? '<span class="mono">' + esc(coords) + '</span>' + (mapLinkFor(r.latitude, r.longitude) ? ' · ' + mapLinkFor(r.latitude, r.longitude) : '')
+                : '—'),
+            detailItem('Points', esc(r.points == null ? '—' : r.points)),
+            detailItem('Incident ID', '<span class="mono">' + esc(r.id) + '</span>', true)
+        ],
+        extra: (r.photo_url ? '<img src="' + esc(r.photo_url) + '" alt="Incident photo">' : '') +
+            incidentTtlDetail(r)
+    });
 }
+
+function showApprovalDetails(key) {
+    const r = state.approvals.find((x) => String(x.id) === String(key));
+    if (!r) return;
+    openDetail({
+        title: 'Driver request · ' + String(r.status || '').toUpperCase(),
+        icon: '👤',
+        heading: esc(r.name || 'Unnamed driver'),
+        sub: esc(r.driver_id || '') + (r.phone ? ' · ' + esc(r.phone) : ''),
+        badges: badge(r.status),
+        items: [
+            detailItem('Full name', esc(r.name || '—')),
+            detailItem('Phone', '<span class="mono">' + esc(r.phone || '—') + '</span>'),
+            detailItem('Driver ID', '<span class="mono">' + esc(r.driver_id || '—') + '</span>'),
+            detailItem('Vehicle', '<span class="mono">' + esc(r.vehicle_no || '—') + '</span>' +
+                (r.vehicle_type ? '<span class="cell-sub">' + esc(r.vehicle_type) + '</span>' : '')),
+            detailItem('Organization', esc(r.organization || '—')),
+            detailItem('Status', badge(r.status)),
+            detailItem('Submitted', '<span class="mono">' + esc(fmtTime(r.created_at)) + '</span>'),
+            detailItem('Reviewed', '<span class="mono">' + esc(r.reviewed_at ? fmtTime(r.reviewed_at) : 'Not reviewed yet') + '</span>'),
+            r.rejection_reason ? detailItem('Rejection reason', esc(r.rejection_reason), true) : '',
+            detailItem('Request ID', '<span class="mono">' + esc(r.id) + '</span>', true)
+        ].filter(Boolean)
+    });
+}
+
+function showVehicleDetails(key) {
+    const d = state.drivers.find((x) => String(x.id) === String(key));
+    if (!d) return;
+    const coords = (d.current_latitude != null && d.current_longitude != null)
+        ? Number(d.current_latitude).toFixed(5) + ', ' + Number(d.current_longitude).toFixed(5) : '';
+    openDetail({
+        title: 'Emergency vehicle',
+        icon: '🚒',
+        heading: esc(d.name || d.vehicle_no || 'Vehicle'),
+        sub: esc(d.vehicle_no || '') + (d.vehicle_type ? ' · ' + esc(d.vehicle_type) : ''),
+        badges: badge(d.availability || 'OFFLINE'),
+        items: [
+            detailItem('Driver', esc(d.name || '—')),
+            detailItem('Phone', '<span class="mono">' + esc(d.phone || '—') + '</span>'),
+            detailItem('Driver ID', '<span class="mono">' + esc(d.driver_id || '—') + '</span>'),
+            detailItem('Vehicle number', '<span class="mono">' + esc(d.vehicle_no || '—') + '</span>'),
+            detailItem('Vehicle type', badge(d.vehicle_type)),
+            detailItem('Organization', esc(d.organization || '—')),
+            detailItem('Approval', badge(d.approval_status || 'pending')),
+            detailItem('Availability', badge(d.availability || 'OFFLINE')),
+            detailItem('Location', coords
+                ? '<span class="mono">' + esc(coords) + '</span>' + (mapLinkFor(d.current_latitude, d.current_longitude) ? ' · ' + mapLinkFor(d.current_latitude, d.current_longitude) : '')
+                : 'Not reported'),
+            detailItem('Last seen', '<span class="mono">' + esc(relative(d.last_location_update)) + '</span>' +
+                (d.last_location_update ? '<span class="cell-sub">' + esc(fmtTime(d.last_location_update)) + '</span>' : ''))
+        ]
+    });
+}
+
+function showDispatchDetails(key) {
+    const d = state.dispatches.find((x) => String(x.id) === String(key));
+    if (!d) return;
+    const coords = (d.latitude != null && d.longitude != null)
+        ? Number(d.latitude).toFixed(5) + ', ' + Number(d.longitude).toFixed(5) : '';
+    openDetail({
+        title: 'Emergency assignment · ' + String(d.status || '').toUpperCase(),
+        icon: '📡',
+        heading: (d.incident_type || 'Emergency') + ' response',
+        sub: 'Created ' + esc(fmtTime(d.created_at)),
+        badges: badge(d.status),
+        items: [
+            detailItem('Status', badge(d.status)),
+            detailItem('Needs', badge(d.required_vehicle)),
+            detailItem('Incident type', typeChip(d.incident_type)),
+            detailItem('Location', locationOf(d)),
+            detailItem('Coordinates', coords
+                ? '<span class="mono">' + esc(coords) + '</span>' + (mapLinkFor(d.latitude, d.longitude) ? ' · ' + mapLinkFor(d.latitude, d.longitude) : '')
+                : '—'),
+            detailItem('Assigned driver', d.driver_name || d.driver_id
+                ? '<span class="cell-strong">' + esc(d.driver_name || d.driver_id) + '</span>' +
+                  (d.vehicle_no ? '<span class="cell-sub">' + esc(d.vehicle_no) + '</span>' : '')
+                : '<span class="mono">Unassigned</span>'),
+            detailItem('Created', '<span class="mono">' + esc(fmtTime(d.created_at)) + '</span>'),
+            detailItem('Dispatch ID', '<span class="mono">' + esc(d.id) + '</span>'),
+            d.report_id ? detailItem('Incident ID', '<span class="mono">' + esc(d.report_id) + '</span>', true) : ''
+        ].filter(Boolean)
+    });
+}
+
+function showTripDetails(key) {
+    const k = String(key);
+    const t = state.trips.find((x) => String(x.id) === k) ||
+        state.trips.find((x) => k.startsWith([x.driver_id, x.started_at, x.incident_type].join('|')));
+    if (!t) return;
+    const crit = criticalityOf(t);
+    openDetail({
+        title: 'Signal-Aid trip · ' + String(t.status || '').toUpperCase(),
+        icon: '🚑',
+        heading: esc(t.driver_name || t.driver_id || 'Trip'),
+        sub: esc(t.vehicle_no || '') + (t.incident_type ? ' · ' + esc(t.incident_type) : ''),
+        badges: badge(t.status || 'en_route'),
+        items: [
+            detailItem('Driver', esc(t.driver_name || t.driver_id || '—')),
+            detailItem('Vehicle', '<span class="mono">' + esc(t.vehicle_no || '—') + '</span>'),
+            detailItem('Criticality', crit ? badge(crit) : '—'),
+            detailItem('Status', badge(t.status || 'en_route')),
+            detailItem('Travel time', '<span class="mono">' + esc(tripTime(t)) + '</span>'),
+            detailItem('Distance', t.distance != null ? '<span class="mono">' + Number(t.distance).toFixed(2) + ' km</span>' : '—'),
+            detailItem('Incident', esc(t.incident_type || '—')),
+            detailItem('Address', esc(t.address || '—')),
+            detailItem('Started', '<span class="mono">' + esc(fmtTime(t.started_at)) + '</span>'),
+            t.report_id ? detailItem('Incident ID', '<span class="mono">' + esc(t.report_id) + '</span>', true) : ''
+        ].filter(Boolean)
+    });
+}
+
+function showUserDetails(key) {
+    const u = state.users.find((x) => String(x.id) === String(key));
+    if (!u) return;
+    const initials = String(u.name || u.phone || '?').substring(0, 2).toUpperCase();
+    openDetail({
+        title: 'User profile',
+        icon: esc(initials),
+        heading: esc(u.name || u.phone || 'User'),
+        sub: esc(u.phone || ''),
+        badges: badge(u.role),
+        items: [
+            detailItem('Name', esc(u.name || '—')),
+            detailItem('Phone', '<span class="mono">' + esc(u.phone || '—') + '</span>'),
+            detailItem('Role', badge(u.role)),
+            detailItem('Points', '<span class="mono">' + esc(u.points == null ? '—' : u.points) + '</span>'),
+            u.role === 'emergency_driver' ? detailItem('Approval', badge(u.approval_status || 'pending')) : '',
+            u.role === 'emergency_driver' ? detailItem('Availability', badge(u.availability || 'OFFLINE')) : '',
+            detailItem('Joined', '<span class="mono">' + esc(fmtTime(u.created_at)) + '</span>' +
+                '<span class="cell-sub">' + esc(relative(u.created_at)) + '</span>'),
+            detailItem('User ID', '<span class="mono">' + esc(u.id) + '</span>', true)
+        ].filter(Boolean)
+    });
+}
+
+function wireRowDetail(tbodyId, openFn) {
+    const tb = $(tbodyId);
+    if (!tb) return;
+    tb.addEventListener('click', (e) => {
+        if (e.target.closest('button, a, select, input, img, textarea')) return;
+        const tr = e.target.closest('tr[data-key]');
+        if (tr) openFn(tr.dataset.key);
+    });
+}
+wireRowDetail('dash-approvals-tbody', showApprovalDetails);
+wireRowDetail('approvals-tbody', showApprovalDetails);
+wireRowDetail('incidents-tbody', showIncident);
+wireRowDetail('vehicles-tbody', showVehicleDetails);
+wireRowDetail('dispatches-tbody', showDispatchDetails);
+wireRowDetail('dash-trips-tbody', showTripDetails);
+wireRowDetail('trips-tbody', showTripDetails);
+wireRowDetail('users-tbody', showUserDetails);
 
 /* ── Vehicles (approved drivers + availability + location) ───── */
 function vehicleCells(d) {
@@ -1571,6 +2002,7 @@ async function setAvailability(id, availability, el) {
         await api('/api/users/' + id + '/availability', { method: 'PATCH', body: JSON.stringify({ availability }) });
         toast('Vehicle availability set to ' + availability + '.');
         await refreshAll();
+        pulseRow(id);
     } catch (err) {
         toast(err.message, 'error');
         if (el) el.value = availability === 'AVAILABLE' ? 'OFFLINE' : 'AVAILABLE';
@@ -1618,6 +2050,7 @@ async function reopenDispatch(id) {
         await api('/api/admin/dispatches/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'available' }) });
         toast('Assignment released and re-opened for drivers.');
         await refreshAll();
+        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1627,6 +2060,7 @@ async function cancelDispatch(id) {
         await api('/api/admin/dispatches/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'cancelled' }) });
         toast('Assignment cancelled. The assigned driver has been released.');
         await refreshAll();
+        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 

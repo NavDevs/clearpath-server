@@ -64,6 +64,12 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json());
+// The dashboard is a live surface: a cached index.html against the current API
+// produced 404 storms (removed endpoints). Never let the browser reuse it.
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path === '/index.html') res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public'))); // Serve the Admin UI
 
 const upload = multer({ 
