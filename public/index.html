@@ -10,11 +10,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script>
-        // Apply the saved theme before first paint so there is no light flash.
+        // Apply the saved theme before first paint so there is no flash.
+        // Default is DARK (black) — light is only used if the admin
+        // explicitly chose it with the toggle before.
         (function () {
             var saved = null;
             try { saved = localStorage.getItem('clearpath_theme'); } catch (e) {}
-            document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+            document.documentElement.dataset.theme = saved === 'light' ? 'light' : 'dark';
         })();
     </script>
     <style>

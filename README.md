@@ -35,7 +35,7 @@ Central cloud backend for **Roadly** (citizen road-hazard reporting) and **Signa
 - Points per report type, leaderboard, reward events audit trail
 
 ### Admin Command Dashboard (`/`)
-- Light/dark theme, row-click detail cards, live socket refresh
+- Dark theme by default (manual toggle to light), row-click detail cards, live socket refresh
 - Split **Roadly Users** / **Signal-Aid Users** tables, incident TTL countdowns, driver approvals, dispatch/trip monitoring
 
 ---
