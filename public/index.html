@@ -1008,13 +1008,26 @@ body, .sidebar, .card, .stat-card, .modal, .toast, th, td, .header-time,
         <div class="view hidden" id="view-users">
             <div class="section fade-in">
                 <div class="section-header">
-                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Registered Users</span></div>
-                    <span class="section-count" id="users-count"></span>
+                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Roadly Users</span></div>
+                    <span class="section-count" id="roadly-users-count"></span>
                 </div>
                 <div class="card"><div class="card-inner">
                     <table>
-                        <thead><tr><th>Name</th><th>Phone / ID</th><th>Role</th><th>Approval</th><th>Availability</th><th>Points</th><th>Joined</th></tr></thead>
-                        <tbody id="users-tbody"><tr class="empty-row"><td colspan="7">Loading…</td></tr></tbody>
+                        <thead><tr><th>Name</th><th>Phone</th><th>Points</th><th>Joined</th></tr></thead>
+                        <tbody id="roadly-users-tbody"><tr class="empty-row"><td colspan="4">Loading…</td></tr></tbody>
+                    </table>
+                </div></div>
+            </div>
+
+            <div class="section fade-in">
+                <div class="section-header">
+                    <div class="section-badge"><div class="section-badge-dot"></div><span class="section-badge-text">Signal-Aid Users</span></div>
+                    <span class="section-count" id="signalaid-users-count"></span>
+                </div>
+                <div class="card"><div class="card-inner">
+                    <table>
+                        <thead><tr><th>Name</th><th>Phone / ID</th><th>Approval</th><th>Availability</th><th>Points</th><th>Joined</th></tr></thead>
+                        <tbody id="signalaid-users-tbody"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody>
                     </table>
                 </div></div>
             </div>
@@ -1875,7 +1888,8 @@ wireRowDetail('vehicles-tbody', showVehicleDetails);
 wireRowDetail('dispatches-tbody', showDispatchDetails);
 wireRowDetail('dash-trips-tbody', showTripDetails);
 wireRowDetail('trips-tbody', showTripDetails);
-wireRowDetail('users-tbody', showUserDetails);
+wireRowDetail('roadly-users-tbody', showUserDetails);
+wireRowDetail('signalaid-users-tbody', showUserDetails);
 
 /* ── Vehicles (approved drivers + availability + location) ───── */
 function vehicleCells(d) {
@@ -2020,30 +2034,42 @@ function renderTrips() {
     setText($('dash-trips-count'), rows.length + ' total');
 }
 
-/* ── Users ───────────────────────────────────────────────────── */
-function userCells(u) {
+/* ── Users (split by app: Roadly citizens vs Signal-Aid drivers) ─ */
+function userCells(u, forDriver) {
     const initials = String(u.name || u.phone || '?').substring(0, 2).toUpperCase();
-    return [
+    const cells = [
         '<div class="user-cell"><div class="avatar">' + esc(initials) + '</div><span class="cell-strong">' + esc(u.name || '—') + '</span></div>',
-        '<span class="mono">' + esc(u.phone || u.driver_id || '—') + '</span>',
-        badge(u.role),
-        u.role === 'emergency_driver' ? badge(u.approval_status || 'pending') : '<span class="mono">—</span>',
-        u.role === 'emergency_driver' ? badge(u.availability || 'OFFLINE') : '<span class="mono">—</span>',
-        '<span class="mono">' + esc(u.points == null ? '—' : u.points) + '</span>',
-        '<span class="mono">' + esc(relative(u.created_at)) + '</span>'
+        '<span class="mono">' + esc(u.phone || u.driver_id || '—') + '</span>'
     ];
+    if (forDriver) {
+        cells.push(badge(u.approval_status || 'pending'));
+        cells.push(badge(u.availability || 'OFFLINE'));
+    }
+    cells.push('<span class="mono">' + esc(u.points == null ? '—' : u.points) + '</span>');
+    cells.push('<span class="mono">' + esc(relative(u.created_at)) + '</span>');
+    return cells;
 }
 
 function renderUsers() {
-    const body = $('users-tbody');
     const rows = state.users;
+    const roadlyRows = rows.filter((u) => u.role !== 'emergency_driver');
+    const driverRows = rows.filter((u) => u.role === 'emergency_driver');
     const fp = JSON.stringify(rows) + '|t' + Math.floor(Date.now() / 60000);
-    if (stale(body, fp)) {
-        reconcileTbody(body, rows, (u) => u.id, userCells,
-            { cols: 7, empty: '👥 No users registered yet.' });
-        commit(body, fp);
+
+    const roadlyBody = $('roadly-users-tbody');
+    if (stale(roadlyBody, fp)) {
+        reconcileTbody(roadlyBody, roadlyRows, (u) => u.id, (u) => userCells(u, false),
+            { cols: 4, empty: '👥 No Roadly users registered yet.' });
+        commit(roadlyBody, fp);
     }
-    setText($('users-count'), rows.length + ' registered');
+    const driverBody = $('signalaid-users-tbody');
+    if (stale(driverBody, fp)) {
+        reconcileTbody(driverBody, driverRows, (u) => u.id, (u) => userCells(u, true),
+            { cols: 6, empty: '🚒 No Signal-Aid drivers registered yet.' });
+        commit(driverBody, fp);
+    }
+    setText($('roadly-users-count'), roadlyRows.length + ' registered');
+    setText($('signalaid-users-count'), driverRows.length + ' registered');
 }
 
 /* ── Modal + clock ───────────────────────────────────────────── */
