@@ -3,6 +3,7 @@
 Central cloud backend for **Roadly** (citizen road-hazard reporting) and **Signal-Aid** (emergency-driver response). Serves the REST API, the Socket.IO realtime layer, the admin command dashboard, and the time-based incident lifecycle engine.
 
 - **Live:** https://clearpath-server.onrender.com
+- **Roadly website:** https://navdevs.github.io/Roadly-/
 - **Docs:** [API.md](API.md) · [DATABASE.md](DATABASE.md) · [SOCKET_EVENTS.md](SOCKET_EVENTS.md) · [DEMO_GUIDE.md](DEMO_GUIDE.md)
 
 ---
