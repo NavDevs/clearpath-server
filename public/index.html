@@ -320,7 +320,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important;
 .section-tools { display: flex; align-items: center; gap: 10px; }
 
 /* ── CARD + TABLE ──────────────────────────────────────── */
-.card { border-radius: var(--radius); overflow: hidden; }
+.card { border-radius: var(--radius); overflow: clip; }
 .card-inner { overflow-x: auto; }
 .card-pad { padding: 20px; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
@@ -329,6 +329,8 @@ th {
     padding: 13px 18px; text-align: left; white-space: nowrap; font-weight: 700; color: #64748B;
     font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
     border-bottom: 1px solid var(--border-soft);
+    position: sticky; top: 0; z-index: 2; background: #F8FAFC;
+    box-shadow: 0 1px 0 var(--border-soft);
 }
 td { padding: 14px 18px; border-top: 1px solid var(--border-soft); vertical-align: middle; color: #334155; }
 tbody tr { transition: background 0.15s; }
@@ -337,7 +339,7 @@ tbody tr:hover { background: rgba(79, 70, 229, 0.04); }
 .mono { font-size: 12px; color: #64748B; font-variant-numeric: tabular-nums; }
 .cell-strong { font-weight: 700; color: #0F172A; }
 .cell-sub { font-size: 11px; color: #94A3B8; display: block; margin-top: 3px; }
-.desc-cell { max-width: 260px; font-size: 13px; line-height: 1.5; color: #475569; }
+.desc-cell { display: block; max-width: 260px; font-size: 13px; line-height: 1.5; color: #475569; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 
@@ -471,18 +473,20 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--primary); 
 /* sidebar links glide */
 .sidebar-link:hover { transform: translateX(4px); }
 
-/* table rows cascade in (works for every table on the page) */
-tbody tr { animation: rowIn 0.35s ease-out backwards; }
-tbody tr:nth-child(2) { animation-delay: 0.03s; }
-tbody tr:nth-child(3) { animation-delay: 0.06s; }
-tbody tr:nth-child(4) { animation-delay: 0.09s; }
-tbody tr:nth-child(5) { animation-delay: 0.12s; }
-tbody tr:nth-child(6) { animation-delay: 0.15s; }
-tbody tr:nth-child(7) { animation-delay: 0.18s; }
-tbody tr:nth-child(8) { animation-delay: 0.21s; }
-tbody tr:nth-child(9) { animation-delay: 0.24s; }
-tbody tr:nth-child(10) { animation-delay: 0.27s; }
-tbody tr:nth-child(n+11) { animation-delay: 0.3s; }
+/* Rows animate ONLY when they are first inserted (.row-new) — kept rows never
+   replay, so live updates move data into place without the table flickering.
+   The cascade below staggers that first paint (and bulk loads) only. */
+tbody tr.row-new { animation: rowIn 0.35s ease-out backwards; }
+tbody tr.row-new:nth-child(2) { animation-delay: 0.03s; }
+tbody tr.row-new:nth-child(3) { animation-delay: 0.06s; }
+tbody tr.row-new:nth-child(4) { animation-delay: 0.09s; }
+tbody tr.row-new:nth-child(5) { animation-delay: 0.12s; }
+tbody tr.row-new:nth-child(6) { animation-delay: 0.15s; }
+tbody tr.row-new:nth-child(7) { animation-delay: 0.18s; }
+tbody tr.row-new:nth-child(8) { animation-delay: 0.21s; }
+tbody tr.row-new:nth-child(9) { animation-delay: 0.24s; }
+tbody tr.row-new:nth-child(10) { animation-delay: 0.27s; }
+tbody tr.row-new:nth-child(n+11) { animation-delay: 0.3s; }
 
 /* modal overlay fades, not just appears */
 .modal-overlay.open { animation: fadeIn 0.2s ease-out; }
@@ -506,6 +510,41 @@ tbody tr:nth-child(n+11) { animation-delay: 0.3s; }
 
 /* toast pops in */
 .toast.show { animation: toastPop 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15); }
+.toast.ok::before { content: '✓ '; font-weight: 800; }
+.toast.error::before { content: '⚠ '; }
+
+/* ── LIVE-UPDATE FEEDBACK ───────────────────────────────────────
+   Data arrives surgically (only changed cells touch the DOM), so these
+   cues tell you WHAT moved: a top sync sweep, a soft flash behind the
+   exact cell that changed, and a pop on any number that ticked. */
+.sync-bar {
+    position: fixed; top: 0; left: 0; width: 38%; height: 3px; z-index: 5000;
+    background: var(--grad); border-radius: 0 3px 3px 0; opacity: 0;
+    transform: translateX(-100%); pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+.sync-bar.syncing { opacity: 1; animation: syncSweep 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+@keyframes syncSweep { from { transform: translateX(-100%); } to { transform: translateX(365%); } }
+
+@keyframes cellFlash {
+    0% { background-color: rgba(79, 70, 229, 0.16); box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.18); }
+    100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
+}
+td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
+
+@keyframes countPop { 0% { transform: scale(1); } 35% { transform: scale(1.3); } 100% { transform: scale(1); } }
+.count-pop, .section-count.pop { animation: countPop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.4); display: inline-block; }
+.stat-sub.pop { animation: countPop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.4); }
+
+@keyframes statBump {
+    0% { transform: translateY(0); }
+    38% { transform: translateY(-5px); box-shadow: var(--shadow-hover); border-color: var(--primary-100); }
+    100% { transform: translateY(0); }
+}
+.stat-card.bump { animation: statBump 0.55s cubic-bezier(0.2, 0.8, 0.3, 1); }
+
+/* calmer, finished-looking empty states */
+.empty-row td { padding: 44px 20px !important; letter-spacing: 0.01em; }
 
 /* ── RESPONSIVE ────────────────────────────────────────── */
 @media (max-width: 1240px) {
@@ -804,6 +843,7 @@ tbody tr:nth-child(n+11) { animation-delay: 0.3s; }
     </div>
 </div>
 
+<div class="sync-bar" id="sync-bar" aria-hidden="true"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -910,6 +950,101 @@ function empty(tbody, cols, message) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="' + cols + '">' + esc(message) + '</td></tr>';
 }
 
+/* ── Seamless live updates ──────────────────────────────────────
+   Tables are reconciled IN PLACE: rows are keyed by id, untouched rows
+   keep their DOM (no re-animation, no lost focus/scroll), only changed
+   cells are rewritten (with a soft flash), rows that move slide to their
+   new slot (FLIP), and a whole section is skipped entirely when its data
+   fingerprint is unchanged. The table never "reloads" as a component. */
+let flashCells = true; // background time ticks stay quiet; live events flash
+
+function stale(el, fingerprint) { return !el || el.dataset.fp !== fingerprint; }
+function commit(el, fingerprint) { if (el) el.dataset.fp = fingerprint; }
+
+function setText(el, text) {
+    if (!el) return;
+    const value = String(text);
+    if (el.textContent === value) return;
+    el.textContent = value;
+    el.classList.remove('pop');
+    void el.offsetWidth;
+    el.classList.add('pop');
+}
+
+function reconcileTbody(tbody, items, keyFn, cellsFn, opts = {}) {
+    const cols = opts.cols || 1;
+    const emptyMsg = opts.empty || 'Nothing here yet.';
+
+    if (!items.length) {
+        if (tbody.dataset.emptyMsg === emptyMsg &&
+            tbody.childElementCount === 1 &&
+            tbody.firstElementChild.classList.contains('empty-row')) return;
+        tbody.innerHTML = '<tr class="empty-row row-new"><td colspan="' + cols + '">' + esc(emptyMsg) + '</td></tr>';
+        const placeholder = tbody.firstElementChild;
+        if (placeholder) placeholder.addEventListener('animationend',
+            () => placeholder.classList.remove('row-new'), { once: true });
+        tbody.dataset.emptyMsg = emptyMsg;
+        return;
+    }
+    tbody.dataset.emptyMsg = '';
+
+    // Snapshot positions of surviving rows so they can slide (FLIP) instead of jump.
+    const firstPaint = !tbody.querySelector('tr[data-key]');
+    const before = new Map();
+    if (!firstPaint) tbody.querySelectorAll('tr[data-key]')
+        .forEach((tr) => before.set(tr.dataset.key, tr.getBoundingClientRect().top));
+
+    const desired = items.map((item, i) => ({ key: String(keyFn(item, i)), cells: cellsFn(item, i) }));
+    const desiredKeys = new Set(desired.map((row) => row.key));
+
+    // Remove rows that left the data set, plus any loading/empty placeholder.
+    Array.from(tbody.children).forEach((tr) => {
+        if (tr.dataset.key == null || !desiredKeys.has(tr.dataset.key)) tr.remove();
+    });
+
+    const existing = new Map();
+    tbody.querySelectorAll('tr[data-key]').forEach((tr) => existing.set(tr.dataset.key, tr));
+
+    const flashes = [];
+    desired.forEach((row) => {
+        let tr = existing.get(row.key);
+        if (!tr) {
+            tr = document.createElement('tr');
+            tr.className = 'row-new';
+            tr.dataset.key = row.key;
+            tr.addEventListener('animationend', () => tr.classList.remove('row-new'), { once: true });
+            existing.set(row.key, tr);
+        }
+        while (tr.children.length < row.cells.length) tr.appendChild(document.createElement('td'));
+        row.cells.forEach((html, ci) => {
+            const td = tr.children[ci];
+            if (td.innerHTML !== html) {
+                td.innerHTML = html;
+                if (flashCells) flashes.push(td);
+            }
+        });
+        tbody.appendChild(tr); // appending in order establishes the desired order
+    });
+
+    // Reordered rows glide to their new position rather than teleporting.
+    if (!firstPaint && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        tbody.querySelectorAll('tr[data-key]').forEach((tr) => {
+            const prev = before.get(tr.dataset.key);
+            if (prev == null) return;
+            const dy = prev - tr.getBoundingClientRect().top;
+            if (Math.abs(dy) < 1) return;
+            tr.animate([{ transform: 'translateY(' + dy + 'px)' }, { transform: 'translateY(0)' }],
+                { duration: 320, easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)' });
+        });
+    }
+
+    if (flashes.length) requestAnimationFrame(() => flashes.forEach((td) => {
+        td.classList.remove('cell-flash');
+        void td.offsetWidth;
+        td.classList.add('cell-flash');
+    }));
+}
+
 let toastTimer = null;
 function toast(message, kind = 'ok') {
     const el = $('toast');
@@ -996,7 +1131,7 @@ function showView(view) {
     }
 }
 
-// Animated number tick for the stat cards.
+// Animated number tick for the stat cards (bumps the card when it changes).
 function countUp(el, value) {
     if (!el) return;
     const to = Number(value);
@@ -1004,6 +1139,13 @@ function countUp(el, value) {
     const from = Number(el.dataset.v || 0);
     el.dataset.v = to;
     if (from === to) { el.textContent = to; return; }
+    const card = el.closest('.stat-card');
+    if (card) {
+        card.classList.remove('bump');
+        void card.offsetWidth;
+        card.classList.add('bump');
+        card.addEventListener('animationend', () => card.classList.remove('bump'), { once: true });
+    }
     const start = performance.now();
     const dur = 600;
     function frame(now) {
@@ -1061,45 +1203,75 @@ $('refresh-btn').addEventListener('click', async () => {
 });
 
 /* ── Data loading ────────────────────────────────────────────── */
+let refreshInFlight = false;
+let refreshQueued = false;
+let syncShownAt = 0;
+let syncHideTimer = null;
+
+function showSync() {
+    clearTimeout(syncHideTimer);
+    if (!syncShownAt) syncShownAt = Date.now();
+    $('sync-bar').classList.add('syncing');
+}
+function hideSync() {
+    const wait = Math.max(0, 450 - (Date.now() - syncShownAt));
+    clearTimeout(syncHideTimer);
+    syncHideTimer = setTimeout(() => {
+        $('sync-bar').classList.remove('syncing');
+        syncShownAt = 0;
+    }, wait);
+}
+
 async function refreshAll() {
     if (!token()) return;
-    const [reports, approvals, drivers, incidents, dispatches, trips, users, stats] = await Promise.all([
-        api('/api/reports').catch(() => state.reports),
-        api('/api/admin/driver-requests').catch(() => state.approvals),
-        api('/api/admin/drivers').catch(() => state.drivers),
-        api('/api/admin/incidents').catch(() => state.incidents),
-        api('/api/admin/dispatches').catch(() => state.dispatches),
-        api('/api/admin/trips').catch(() => state.trips),
-        api('/api/admin/users').catch(() => state.users),
-        api('/api/admin/stats').catch(() => state.stats)
-    ]);
+    // Coalesce bursts (socket storms) into one fetch so the page never
+    // thrashes with overlapping refreshes.
+    if (refreshInFlight) { refreshQueued = true; return; }
+    refreshInFlight = true;
+    showSync();
+    try {
+        const [reports, approvals, drivers, incidents, dispatches, trips, users, stats] = await Promise.all([
+            api('/api/reports').catch(() => state.reports),
+            api('/api/admin/driver-requests').catch(() => state.approvals),
+            api('/api/admin/drivers').catch(() => state.drivers),
+            api('/api/admin/incidents').catch(() => state.incidents),
+            api('/api/admin/dispatches').catch(() => state.dispatches),
+            api('/api/admin/trips').catch(() => state.trips),
+            api('/api/admin/users').catch(() => state.users),
+            api('/api/admin/stats').catch(() => state.stats)
+        ]);
 
-    // A failed request keeps the last good data instead of wiping the table —
-    // Render cold starts (the keep-alive cron wakes the service) can make one
-    // endpoint time out while the others answer, and an empty table after a
-    // successful load looks like data loss.
-    state.reports = Array.isArray(reports) ? reports : state.reports;
-    state.approvals = Array.isArray(approvals) ? approvals : state.approvals;
-    state.drivers = Array.isArray(drivers) ? drivers : state.drivers;
-    state.incidents = Array.isArray(incidents) ? incidents : state.incidents;
-    state.dispatches = Array.isArray(dispatches) ? dispatches : state.dispatches;
-    state.trips = Array.isArray(trips) ? trips : state.trips;
-    state.users = Array.isArray(users) ? users : state.users;
-    state.stats = stats || state.stats;
+        // A failed request keeps the last good data instead of wiping the table —
+        // Render cold starts (the keep-alive cron wakes the service) can make one
+        // endpoint time out while the others answer, and an empty table after a
+        // successful load looks like data loss.
+        state.reports = Array.isArray(reports) ? reports : state.reports;
+        state.approvals = Array.isArray(approvals) ? approvals : state.approvals;
+        state.drivers = Array.isArray(drivers) ? drivers : state.drivers;
+        state.incidents = Array.isArray(incidents) ? incidents : state.incidents;
+        state.dispatches = Array.isArray(dispatches) ? dispatches : state.dispatches;
+        state.trips = Array.isArray(trips) ? trips : state.trips;
+        state.users = Array.isArray(users) ? users : state.users;
+        state.stats = stats || state.stats;
 
-    // A single broken renderer must never freeze the whole dashboard again:
-    // each render runs on its own so one failure can't abort the rest.
-    const safe = (fn, name) => {
-        try { fn(); } catch (err) { console.error('[Dashboard] render ' + name + ' failed:', err); }
-    };
-    safe(renderStats, 'stats');
-    safe(renderApprovals, 'approvals');
-    safe(renderIncidents, 'incidents');
-    safe(renderVehicles, 'vehicles');
-    safe(renderDispatches, 'dispatches');
-    safe(renderTrips, 'trips');
-    safe(renderUsers, 'users');
-    safe(renderCounts, 'counts');
+        // A single broken renderer must never freeze the whole dashboard again:
+        // each render runs on its own so one failure can't abort the rest.
+        const safe = (fn, name) => {
+            try { fn(); } catch (err) { console.error('[Dashboard] render ' + name + ' failed:', err); }
+        };
+        safe(renderStats, 'stats');
+        safe(renderApprovals, 'approvals');
+        safe(renderIncidents, 'incidents');
+        safe(renderVehicles, 'vehicles');
+        safe(renderDispatches, 'dispatches');
+        safe(renderTrips, 'trips');
+        safe(renderUsers, 'users');
+        safe(renderCounts, 'counts');
+    } finally {
+        refreshInFlight = false;
+        hideSync();
+        if (refreshQueued) { refreshQueued = false; refreshAll().catch(() => {}); }
+    }
 }
 
 function renderCounts() {
@@ -1117,43 +1289,69 @@ function renderCounts() {
 function setCount(id, value, alert) {
     const el = $(id);
     if (!el) return;
-    el.textContent = value;
+    const next = String(value);
+    if (el.textContent !== next) {
+        el.textContent = next;
+        el.classList.remove('count-pop');
+        void el.offsetWidth;
+        el.classList.add('count-pop');
+    }
     el.classList.toggle('alert', !!alert);
 }
 
 function renderStats() {
     const s = state.stats;
+    const grid = $('stats-grid');
     if (!s) {
         ['incidents', 'verified', 'dispatches', 'users'].forEach((k) => { $('stat-' + k).textContent = '—'; });
         return;
     }
+    // Skip entirely when nothing moved — stat cards never re-animate in place.
+    const fp = JSON.stringify(s);
+    if (!stale(grid, fp)) return;
     countUp($('stat-incidents'), s.incidents.total);
-    $('stat-incidents-sub').textContent = s.incidents.active + ' active · ' + s.incidents.responding + ' responding';
+    setText($('stat-incidents-sub'), s.incidents.active + ' active · ' + s.incidents.responding + ' responding');
     countUp($('stat-verified'), s.incidents.responding || 0);
-    $('stat-verified-sub').textContent = 'Responding now';
+    setText($('stat-verified-sub'), 'Responding now');
     countUp($('stat-dispatches'), s.dispatches.total);
-    $('stat-dispatches-sub').textContent = s.dispatches.available + ' awaiting a driver';
+    setText($('stat-dispatches-sub'), s.dispatches.available + ' awaiting a driver');
     countUp($('stat-users'), s.users.total);
-    $('stat-users-sub').textContent = s.drivers.approved + ' approved drivers · ' + s.drivers.pending + ' pending';
+    setText($('stat-users-sub'), s.drivers.approved + ' approved drivers · ' + s.drivers.pending + ' pending');
+    commit(grid, fp);
 }
 
 /* ── Driver approvals ────────────────────────────────────────── */
-function approvalRow(r) {
+function approvalCells(r) {
     const decision = r.status === 'pending'
         ? '<div class="row-actions">' +
             '<button class="btn-primary" onclick="approveDriver(\'' + esc(r.id) + '\')">Approve</button>' +
             '<button class="btn-danger" onclick="rejectDriver(\'' + esc(r.id) + '\')">Reject</button>' +
           '</div>'
         : (r.status === 'rejected' && r.rejection_reason ? '<span class="cell-sub">' + esc(r.rejection_reason) + '</span>' : '');
-    return '<tr>' +
-        '<td><span class="cell-strong">' + esc(r.name || '—') + '</span><span class="cell-sub">' + esc(r.driver_id || '') + ' · ' + esc(r.phone || '') + '</span></td>' +
-        '<td>' + esc(r.vehicle_no || '—') + '<span class="cell-sub">' + esc(r.vehicle_type || '') + '</span></td>' +
-        '<td>' + esc(r.organization || '—') + '</td>' +
-        '<td class="mono">' + esc(fmtTime(r.created_at)) + '</td>' +
-        '<td>' + badge(r.status) + '</td>' +
-        '<td class="mono">' + esc(r.reviewed_at ? fmtTime(r.reviewed_at) : '—') + '</td>' +
-        '<td>' + decision + '</td>' +
-    '</tr>';
+    return [
+        '<span class="cell-strong">' + esc(r.name || '—') + '</span><span class="cell-sub">' + esc(r.driver_id || '') + ' · ' + esc(r.phone || '') + '</span>',
+        esc(r.vehicle_no || '—') + '<span class="cell-sub">' + esc(r.vehicle_type || '') + '</span>',
+        esc(r.organization || '—'),
+        '<span class="mono">' + esc(fmtTime(r.created_at)) + '</span>',
+        badge(r.status),
+        '<span class="mono">' + esc(r.reviewed_at ? fmtTime(r.reviewed_at) : '—') + '</span>',
+        decision
+    ];
+}
+
+// Compact five-column layout for the dashboard panel (no Submitted/Reviewed).
+function dashApprovalCells(r) {
+    const decision = r.status === 'pending'
+        ? '<div class="row-actions"><button class="btn-primary" onclick="approveDriver(\'' + esc(r.id) + '\')">Approve</button>' +
+          '<button class="btn-danger" onclick="rejectDriver(\'' + esc(r.id) + '\')">Reject</button></div>'
+        : badge(r.status);
+    return [
+        '<span class="cell-strong">' + esc(r.name || '—') + '</span><span class="cell-sub">' + esc(r.driver_id || '') + ' · ' + esc(r.phone || '') + '</span>',
+        esc(r.vehicle_no || '—') + '<span class="cell-sub">' + esc(r.vehicle_type || '') + '</span>',
+        esc(r.organization || '—'),
+        badge(r.status),
+        decision
+    ];
 }
 
 function renderApprovals() {
@@ -1161,32 +1359,24 @@ function renderApprovals() {
     const pending = rows.filter((r) => r.status === 'pending');
 
     // Dashboard panel: the pending queue first, then the most recent decisions.
-    // Compact five-column layout (no Submitted / Reviewed columns).
     const dashBody = $('dash-approvals-tbody');
     const ordered = pending.concat(rows.filter((r) => r.status !== 'pending')).slice(0, 5);
-    if (!ordered.length) {
-        empty(dashBody, 5, 'No Signal-Aid driver requests yet.');
-    } else {
-        dashBody.innerHTML = ordered.map((r) => {
-            const decision = r.status === 'pending'
-                ? '<div class="row-actions"><button class="btn-primary" onclick="approveDriver(\'' + esc(r.id) + '\')">Approve</button>' +
-                  '<button class="btn-danger" onclick="rejectDriver(\'' + esc(r.id) + '\')">Reject</button></div>'
-                : badge(r.status);
-            return '<tr>' +
-                '<td><span class="cell-strong">' + esc(r.name || '—') + '</span><span class="cell-sub">' + esc(r.driver_id || '') + ' · ' + esc(r.phone || '') + '</span></td>' +
-                '<td>' + esc(r.vehicle_no || '—') + '<span class="cell-sub">' + esc(r.vehicle_type || '') + '</span></td>' +
-                '<td>' + esc(r.organization || '—') + '</td>' +
-                '<td>' + badge(r.status) + '</td>' +
-                '<td>' + decision + '</td>' +
-            '</tr>';
-        }).join('');
+    const dashFp = JSON.stringify(ordered);
+    if (stale(dashBody, dashFp)) {
+        reconcileTbody(dashBody, ordered, (r) => r.id, dashApprovalCells,
+            { cols: 5, empty: '📭 No Signal-Aid driver requests yet.' });
+        commit(dashBody, dashFp);
     }
-    $('dash-approvals-count').textContent = pending.length + ' pending';
+    setText($('dash-approvals-count'), pending.length + ' pending');
 
     const body = $('approvals-tbody');
-    if (!rows.length) empty(body, 7, 'No driver registration requests yet.');
-    else body.innerHTML = rows.map(approvalRow).join('');
-    $('approvals-count').textContent = pending.length + ' pending · ' + rows.length + ' total';
+    const fp = JSON.stringify(rows);
+    if (stale(body, fp)) {
+        reconcileTbody(body, rows, (r) => r.id, approvalCells,
+            { cols: 7, empty: '📭 No driver registration requests yet.' });
+        commit(body, fp);
+    }
+    setText($('approvals-count'), pending.length + ' pending · ' + rows.length + ' total');
 }
 
 async function approveDriver(id) {
@@ -1245,6 +1435,21 @@ function incidentActions(r) {
     return '<div class="row-actions">' + resolveBtn + reject + detail + '</div>';
 }
 
+function incidentCells(r) {
+    const photo = r.photo_url
+        ? '<img src="' + esc(r.photo_url) + '" class="report-photo" onclick="showPhoto(\'' + esc(r.photo_url) + '\')" title="Click to view" alt="Incident photo">'
+        : '<span class="mono">—</span>';
+    return [
+        typeChip(r.type),
+        '<span class="desc-cell">' + esc(r.description || '—') + '</span>',
+        '<span class="mono">' + locationOf(r) + '</span>',
+        photo,
+        esc(r.reporter_name || '—') + '<span class="cell-sub">' + esc(r.reporter_phone || '') + '</span>',
+        badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)),
+        incidentActions(r)
+    ];
+}
+
 function renderIncidents() {
     const filter = $('incident-filter').value;
     const rows = filter ? state.incidents.filter((r) => lifecycle(r) === filter) : state.incidents;
@@ -1258,24 +1463,13 @@ function renderIncidents() {
     }
 
     const body = $('incidents-tbody');
-    if (!rows.length) { empty(body, 7, 'No incidents reported yet.'); }
-    else {
-        body.innerHTML = rows.map((r) => {
-            const photo = r.photo_url
-                ? '<img src="' + esc(r.photo_url) + '" class="report-photo" onclick="showPhoto(\'' + esc(r.photo_url) + '\')" title="Click to view" alt="Incident photo">'
-                : '<span class="mono">—</span>';
-            return '<tr>' +
-                '<td>' + typeChip(r.type) + '</td>' +
-                '<td class="desc-cell">' + esc(r.description || '—') + '</td>' +
-                '<td class="mono">' + locationOf(r) + '</td>' +
-                '<td>' + photo + '</td>' +
-                '<td>' + esc(r.reporter_name || '—') + '<span class="cell-sub">' + esc(r.reporter_phone || '') + '</span></td>' +
-                '<td>' + badge(lifecycleLabel(lifecycle(r)), '', lifecycle(r)) + '</td>' +
-                '<td>' + incidentActions(r) + '</td>' +
-            '</tr>';
-        }).join('');
+    const fp = JSON.stringify(rows) + '|' + filter;
+    if (stale(body, fp)) {
+        reconcileTbody(body, rows, (r) => r.id, incidentCells,
+            { cols: 7, empty: '🗺️ No incidents reported yet.' });
+        commit(body, fp);
     }
-    $('incidents-count').textContent = rows.length + ' of ' + state.incidents.length;
+    setText($('incidents-count'), rows.length + ' of ' + state.incidents.length);
 }
 
 $('incident-filter').addEventListener('change', renderIncidents);
@@ -1302,34 +1496,40 @@ function showIncident(id) {
 }
 
 /* ── Vehicles (approved drivers + availability + location) ───── */
+function vehicleCells(d) {
+    const coords = (d.current_latitude != null && d.current_longitude != null)
+        ? Number(d.current_latitude).toFixed(4) + ', ' + Number(d.current_longitude).toFixed(4)
+        : 'Not reported';
+    const mapLink = (d.current_latitude != null && d.current_longitude != null)
+        ? ' <a class="mono" style="color:#4F46E5" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=' + encodeURIComponent(d.current_latitude) + '&mlon=' + encodeURIComponent(d.current_longitude) + '#map=15/' + encodeURIComponent(d.current_latitude) + '/' + encodeURIComponent(d.current_longitude) + '">map ↗</a>'
+        : '';
+    return [
+        '<span class="cell-strong">' + esc(d.name || '—') + '</span><span class="cell-sub">' + esc(d.driver_id || '') + ' · ' + esc(d.phone || '') + '</span>',
+        '<span class="mono">' + esc(d.vehicle_no || '—') + '</span>',
+        badge(d.vehicle_type),
+        esc(d.organization || '—'),
+        badge(d.approval_status || 'pending'),
+        '<select class="status-select" onchange="setAvailability(\'' + esc(d.id) + '\', this.value, this)">' +
+            ['OFFLINE', 'AVAILABLE', 'BUSY'].map((a) => '<option value="' + a + '"' + ((d.availability || 'OFFLINE') === a ? ' selected' : '') + '>' + a + '</option>').join('') +
+        '</select>',
+        '<span class="mono">' + coords + mapLink + '</span>',
+        '<span class="mono">' + esc(relative(d.last_location_update)) + '</span>'
+    ];
+}
+
 function renderVehicles() {
     const body = $('vehicles-tbody');
     const drivers = state.drivers;
-    if (!drivers.length) empty(body, 8, 'No emergency vehicles registered yet.');
-    else body.innerHTML = drivers.map((d) => {
-        const hasLocation = d.availability != null || d.current_latitude != null;
-        const coords = (d.current_latitude != null && d.current_longitude != null)
-            ? Number(d.current_latitude).toFixed(4) + ', ' + Number(d.current_longitude).toFixed(4)
-            : 'Not reported';
-        const mapLink = (d.current_latitude != null && d.current_longitude != null)
-            ? ' <a class="mono" style="color:#4F46E5" target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=' + encodeURIComponent(d.current_latitude) + '&mlon=' + encodeURIComponent(d.current_longitude) + '#map=15/' + encodeURIComponent(d.current_latitude) + '/' + encodeURIComponent(d.current_longitude) + '">map ↗</a>'
-            : '';
-        return '<tr>' +
-            '<td><span class="cell-strong">' + esc(d.name || '—') + '</span><span class="cell-sub">' + esc(d.driver_id || '') + ' · ' + esc(d.phone || '') + '</span></td>' +
-            '<td class="mono">' + esc(d.vehicle_no || '—') + '</td>' +
-            '<td>' + badge(d.vehicle_type) + '</td>' +
-            '<td>' + esc(d.organization || '—') + '</td>' +
-            '<td>' + badge(d.approval_status || 'pending') + '</td>' +
-            '<td><select class="status-select" onchange="setAvailability(\'' + esc(d.id) + '\', this.value, this)">' +
-                ['OFFLINE', 'AVAILABLE', 'BUSY'].map((a) => '<option value="' + a + '"' + ((d.availability || 'OFFLINE') === a ? ' selected' : '') + '>' + a + '</option>').join('') +
-            '</select></td>' +
-            '<td class="mono">' + coords + mapLink + '</td>' +
-            '<td class="mono">' + esc(relative(d.last_location_update)) + '</td>' +
-        '</tr>';
-    }).join('');
+    // Includes a minute bucket so "last seen" ages stay honest without flashing.
+    const fp = JSON.stringify(drivers) + '|t' + Math.floor(Date.now() / 60000);
+    if (stale(body, fp)) {
+        reconcileTbody(body, drivers, (d) => d.id, vehicleCells,
+            { cols: 8, empty: '🚒 No emergency vehicles registered yet.' });
+        commit(body, fp);
+    }
     const approved = drivers.filter((d) => d.approval_status === 'approved');
     const available = approved.filter((d) => d.availability === 'AVAILABLE');
-    $('vehicles-count').textContent = approved.length + ' approved · ' + available.length + ' available';
+    setText($('vehicles-count'), approved.length + ' approved · ' + available.length + ' available');
 }
 
 async function setAvailability(id, availability, el) {
@@ -1344,33 +1544,39 @@ async function setAvailability(id, availability, el) {
 }
 
 /* ── Dispatches / assignments ────────────────────────────────── */
+function dispatchCells(d) {
+    const assigned = d.driver_name || d.driver_id
+        ? '<span class="cell-strong">' + esc(d.driver_name || d.driver_id) + '</span>' + (d.vehicle_no ? '<span class="cell-sub">' + esc(d.vehicle_no) + '</span>' : '')
+        : '<span class="mono">Unassigned</span>';
+    const open = d.status !== 'completed' && d.status !== 'cancelled';
+    const manage = open
+        ? '<div class="row-actions">' +
+            (d.status === 'accepted' ? '<button class="btn-ghost" onclick="reopenDispatch(\'' + esc(d.id) + '\')">Release &amp; re-dispatch</button>' : '') +
+            '<button class="btn-danger" onclick="cancelDispatch(\'' + esc(d.id) + '\')">Cancel</button>' +
+          '</div>'
+        : '<span class="mono">closed</span>';
+    return [
+        badge(d.status),
+        badge(d.required_vehicle),
+        typeChip(d.incident_type),
+        '<span class="mono">' + locationOf(d) + '</span>',
+        assigned,
+        '<span class="mono">' + esc(fmtTime(d.created_at)) + '</span>',
+        manage
+    ];
+}
+
 function renderDispatches() {
     const body = $('dispatches-tbody');
     const rows = state.dispatches;
-    if (!rows.length) empty(body, 7, 'No emergency requests yet. Accident / fire incidents create them immediately.');
-    else body.innerHTML = rows.map((d) => {
-        const assigned = d.driver_name || d.driver_id
-            ? '<span class="cell-strong">' + esc(d.driver_name || d.driver_id) + '</span>' + (d.vehicle_no ? '<span class="cell-sub">' + esc(d.vehicle_no) + '</span>' : '')
-            : '<span class="mono">Unassigned</span>';
-        const open = d.status !== 'completed' && d.status !== 'cancelled';
-        const manage = open
-            ? '<div class="row-actions">' +
-                (d.status === 'accepted' ? '<button class="btn-ghost" onclick="reopenDispatch(\'' + esc(d.id) + '\')">Release &amp; re-dispatch</button>' : '') +
-                '<button class="btn-danger" onclick="cancelDispatch(\'' + esc(d.id) + '\')">Cancel</button>' +
-              '</div>'
-            : '<span class="mono">closed</span>';
-        return '<tr>' +
-            '<td>' + badge(d.status) + '</td>' +
-            '<td>' + badge(d.required_vehicle) + '</td>' +
-            '<td>' + typeChip(d.incident_type) + '</td>' +
-            '<td class="mono">' + locationOf(d) + '</td>' +
-            '<td>' + assigned + '</td>' +
-            '<td class="mono">' + esc(fmtTime(d.created_at)) + '</td>' +
-            '<td>' + manage + '</td>' +
-        '</tr>';
-    }).join('');
+    const fp = JSON.stringify(rows);
+    if (stale(body, fp)) {
+        reconcileTbody(body, rows, (d) => d.id, dispatchCells,
+            { cols: 7, empty: '📡 No emergency requests yet. Accident / fire incidents create them immediately.' });
+        commit(body, fp);
+    }
     const open = rows.filter((d) => d.status === 'available').length;
-    $('dispatches-count').textContent = open + ' awaiting acceptance · ' + rows.length + ' total';
+    setText($('dispatches-count'), open + ' awaiting acceptance · ' + rows.length + ' total');
 }
 
 async function reopenDispatch(id) {
@@ -1404,54 +1610,58 @@ function renderTrips() {
 
     const cells = (t) => {
         const criticality = criticalityOf(t);
-        return {
-            driver: '<span class="cell-strong">' + esc(t.driver_name || t.driver_id || '—') + '</span>' +
-                    '<span class="cell-sub">' + esc(t.vehicle_no || '') + '</span>',
-            criticality: criticality ? badge(criticality) : '<span class="mono">—</span>',
-            time: '<span class="mono">' + esc(tripTime(t)) + '</span>',
-            distance: t.distance != null ? '<span class="mono">' + Number(t.distance).toFixed(2) + ' km</span>' : '<span class="mono">—</span>',
-            incident: '<span class="cell-strong">' + esc(t.incident_type || '—') + '</span><span class="cell-sub">' + esc(t.address || '') + '</span>',
-            status: badge(t.status || 'en_route')
-        };
+        return [
+            '<span class="cell-strong">' + esc(t.driver_name || t.driver_id || '—') + '</span>' +
+                '<span class="cell-sub">' + esc(t.vehicle_no || '') + '</span>',
+            criticality ? badge(criticality) : '<span class="mono">—</span>',
+            '<span class="mono">' + esc(tripTime(t)) + '</span>',
+            t.distance != null ? '<span class="mono">' + Number(t.distance).toFixed(2) + ' km</span>' : '<span class="mono">—</span>',
+            '<span class="cell-strong">' + esc(t.incident_type || '—') + '</span><span class="cell-sub">' + esc(t.address || '') + '</span>',
+            badge(t.status || 'en_route')
+        ];
     };
+    const keyOf = (t, i) => (t.id != null ? t.id : [t.driver_id, t.started_at, t.incident_type, i].join('|'));
+    // Minute bucket keeps relative trip times honest; live changes still flash.
+    const bucket = '|t' + Math.floor(Date.now() / 60000);
 
-    if (!rows.length) {
-        empty(body, 6, 'No emergency dispatches yet.');
-        empty(dashBody, 6, 'No trips yet');
-    } else {
-        body.innerHTML = rows.map((t) => {
-            const c = cells(t);
-            return '<tr><td>' + c.driver + '</td><td>' + c.criticality + '</td><td>' + c.time + '</td><td>' + c.distance +
-                   '</td><td>' + c.incident + '</td><td>' + c.status + '</td></tr>';
-        }).join('');
-        dashBody.innerHTML = rows.slice(0, 5).map((t) => {
-            const c = cells(t);
-            return '<tr><td>' + c.driver + '</td><td>' + c.criticality + '</td><td>' + c.time + '</td><td>' + c.distance +
-                   '</td><td>' + c.incident + '</td><td>' + c.status + '</td></tr>';
-        }).join('');
+    const fp = JSON.stringify(rows) + bucket;
+    if (stale(body, fp)) {
+        reconcileTbody(body, rows, keyOf, cells, { cols: 6, empty: '🚑 No emergency dispatches yet.' });
+        commit(body, fp);
     }
-    $('trips-count').textContent = rows.length + ' total';
-    $('dash-trips-count').textContent = rows.length + ' total';
+    const dashFp = JSON.stringify(rows.slice(0, 5)) + bucket;
+    if (stale(dashBody, dashFp)) {
+        reconcileTbody(dashBody, rows.slice(0, 5), keyOf, cells, { cols: 6, empty: '🚑 No trips yet' });
+        commit(dashBody, dashFp);
+    }
+    setText($('trips-count'), rows.length + ' total');
+    setText($('dash-trips-count'), rows.length + ' total');
 }
 
 /* ── Users ───────────────────────────────────────────────────── */
+function userCells(u) {
+    const initials = String(u.name || u.phone || '?').substring(0, 2).toUpperCase();
+    return [
+        '<div class="user-cell"><div class="avatar">' + esc(initials) + '</div><span class="cell-strong">' + esc(u.name || '—') + '</span></div>',
+        '<span class="mono">' + esc(u.phone || u.driver_id || '—') + '</span>',
+        badge(u.role),
+        u.role === 'emergency_driver' ? badge(u.approval_status || 'pending') : '<span class="mono">—</span>',
+        u.role === 'emergency_driver' ? badge(u.availability || 'OFFLINE') : '<span class="mono">—</span>',
+        '<span class="mono">' + esc(u.points == null ? '—' : u.points) + '</span>',
+        '<span class="mono">' + esc(relative(u.created_at)) + '</span>'
+    ];
+}
+
 function renderUsers() {
     const body = $('users-tbody');
     const rows = state.users;
-    if (!rows.length) empty(body, 7, 'No users registered yet.');
-    else body.innerHTML = rows.map((u) => {
-        const initials = String(u.name || u.phone || '?').substring(0, 2).toUpperCase();
-        return '<tr>' +
-            '<td><div class="user-cell"><div class="avatar">' + esc(initials) + '</div><span class="cell-strong">' + esc(u.name || '—') + '</span></div></td>' +
-            '<td class="mono">' + esc(u.phone || u.driver_id || '—') + '</td>' +
-            '<td>' + badge(u.role) + '</td>' +
-            '<td>' + (u.role === 'emergency_driver' ? badge(u.approval_status || 'pending') : '<span class="mono">—</span>') + '</td>' +
-            '<td>' + (u.role === 'emergency_driver' ? badge(u.availability || 'OFFLINE') : '<span class="mono">—</span>') + '</td>' +
-            '<td class="mono">' + esc(u.points == null ? '—' : u.points) + '</td>' +
-            '<td class="mono">' + esc(relative(u.created_at)) + '</td>' +
-        '</tr>';
-    }).join('');
-    $('users-count').textContent = rows.length + ' registered';
+    const fp = JSON.stringify(rows) + '|t' + Math.floor(Date.now() / 60000);
+    if (stale(body, fp)) {
+        reconcileTbody(body, rows, (u) => u.id, userCells,
+            { cols: 7, empty: '👥 No users registered yet.' });
+        commit(body, fp);
+    }
+    setText($('users-count'), rows.length + ' registered');
 }
 
 /* ── Modal + clock ───────────────────────────────────────────── */
@@ -1487,6 +1697,14 @@ if (typeof io === 'function') {
      'driver.availability_updated', 'driver.location_updated', 'points_updated', 'data_reset']
         .forEach((event) => socket.on(event, scheduleRefresh));
 }
+
+/* Quiet background tick: ages relative timestamps ("2m ago") and doubles as a
+   safety net if the socket ever drops. Flash cues are suppressed here — only
+   real-time events light up individual cells. */
+setInterval(() => {
+    flashCells = false;
+    refreshAll().catch(() => {}).finally(() => { flashCells = true; });
+}, 60000);
 
 /* ── Boot ────────────────────────────────────────────────────── */
 showView(state.view);
