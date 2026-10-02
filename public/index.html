@@ -532,25 +532,6 @@ tbody tr.row-new:nth-child(n+11) { animation-delay: 0.3s; }
 .toast.ok::before { content: '✓ '; font-weight: 800; }
 .toast.error::before { content: '⚠ '; }
 
-/* ── LIVE-UPDATE FEEDBACK ───────────────────────────────────────
-   Data arrives surgically (only changed cells touch the DOM), so these
-   cues tell you WHAT moved: a top sync sweep, a soft flash behind the
-   exact cell that changed, and a pop on any number that ticked. */
-.sync-bar {
-    position: fixed; top: 0; left: 0; width: 38%; height: 2px; z-index: 5000;
-    background: var(--grad); border-radius: 0 3px 3px 0; opacity: 0;
-    transform: translateX(-100%); pointer-events: none;
-    transition: opacity 0.3s ease;
-}
-.sync-bar.syncing { opacity: 1; animation: syncSweep 0.85s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
-@keyframes syncSweep { from { transform: translateX(-100%); } to { transform: translateX(365%); } }
-
-@keyframes cellFlash {
-    0% { background-color: rgba(79, 70, 229, 0.16); box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.18); }
-    100% { background-color: transparent; box-shadow: inset 0 0 0 1px transparent; }
-}
-td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
-
 @keyframes countPop { 0% { transform: scale(1); } 35% { transform: scale(1.3); } 100% { transform: scale(1); } }
 .count-pop, .section-count.pop { animation: countPop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.4); display: inline-block; }
 .stat-sub.pop { animation: countPop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.4); }
@@ -569,11 +550,6 @@ td.cell-flash { animation: cellFlash 1.15s ease-out; border-radius: 7px; }
 tbody tr[data-key] { cursor: pointer; }
 tbody tr[data-key]:hover td { background: rgba(79, 70, 229, 0.035); }
 tbody tr[data-key]:hover td:first-child { box-shadow: inset 3px 0 0 var(--primary); }
-@keyframes rowDone {
-    0% { background-color: rgba(16, 185, 129, 0.20); }
-    100% { background-color: transparent; }
-}
-tbody tr.row-done td { animation: rowDone 1.3s ease-out; }
 
 .detail-hero {
     display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -1056,7 +1032,6 @@ body, .sidebar, .card, .stat-card, .modal, .toast, th, td, .header-time,
     </div>
 </div>
 
-<div class="sync-bar" id="sync-bar" aria-hidden="true"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1210,10 +1185,10 @@ function empty(tbody, cols, message) {
 /* ── Seamless live updates ──────────────────────────────────────
    Tables are reconciled IN PLACE: rows are keyed by id, untouched rows
    keep their DOM (no re-animation, no lost focus/scroll), only changed
-   cells are rewritten (with a soft flash), rows that move slide to their
-   new slot (FLIP), and a whole section is skipped entirely when its data
-   fingerprint is unchanged. The table never "reloads" as a component. */
-let flashCells = true; // background time ticks stay quiet; live events flash
+   cells are rewritten, rows that move slide to their new slot (FLIP),
+   and a whole section is skipped entirely when its data fingerprint is
+   unchanged. The table never "reloads" as a component — values simply
+   swap in with no flashing or sweep effects. */
 
 function stale(el, fingerprint) { return !el || el.dataset.fp !== fingerprint; }
 function commit(el, fingerprint) { if (el) el.dataset.fp = fingerprint; }
@@ -1262,7 +1237,6 @@ function reconcileTbody(tbody, items, keyFn, cellsFn, opts = {}) {
     const existing = new Map();
     tbody.querySelectorAll('tr[data-key]').forEach((tr) => existing.set(tr.dataset.key, tr));
 
-    const flashes = [];
     desired.forEach((row) => {
         let tr = existing.get(row.key);
         if (!tr) {
@@ -1275,12 +1249,7 @@ function reconcileTbody(tbody, items, keyFn, cellsFn, opts = {}) {
         while (tr.children.length < row.cells.length) tr.appendChild(document.createElement('td'));
         row.cells.forEach((html, ci) => {
             const td = tr.children[ci];
-            if (td.innerHTML !== html) {
-                td.innerHTML = html;
-                // Silent columns (e.g. the ticking TTL cell) rewrite without a
-                // flash so per-second changes never look like live events.
-                if (flashCells && !(opts.silentCols || []).includes(ci)) flashes.push(td);
-            }
+            if (td.innerHTML !== html) td.innerHTML = html;
         });
         tbody.appendChild(tr); // appending in order establishes the desired order
     });
@@ -1296,12 +1265,6 @@ function reconcileTbody(tbody, items, keyFn, cellsFn, opts = {}) {
                 { duration: 320, easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)' });
         });
     }
-
-    if (flashes.length) requestAnimationFrame(() => flashes.forEach((td) => {
-        td.classList.remove('cell-flash');
-        void td.offsetWidth;
-        td.classList.add('cell-flash');
-    }));
 }
 
 let toastTimer = null;
@@ -1472,7 +1435,7 @@ $('refresh-btn').addEventListener('click', async () => {
     const btn = $('refresh-btn');
     btn.disabled = true;
     btn.classList.add('spinning');
-    try { await refreshAll({ showBar: true }); toast('Dashboard refreshed.'); }
+    try { await refreshAll(); toast('Dashboard refreshed.'); }
     catch (err) { toast(err.message, 'error'); }
     finally { btn.disabled = false; btn.classList.remove('spinning'); }
 });
@@ -1481,56 +1444,12 @@ $('refresh-btn').addEventListener('click', async () => {
 let refreshInFlight = false;
 let refreshQueued = false;
 
-/* The sync sweep belongs to the manual Refresh button ONLY. Background
-   refreshes (sockets, TTL countdown, 60s tick) swap values in place —
-   no sweep, no flash, nothing that looks like the page is reloading. */
-let syncShownAt = 0;
-let syncHideTimer = null;
-let syncShowTimer = null;
-
-function showSync(opts) {
-    clearTimeout(syncHideTimer);
-    clearTimeout(syncShowTimer);
-    const delay = opts && opts.instant ? 0 : 250;
-    syncShowTimer = setTimeout(() => {
-        if (!syncShownAt) syncShownAt = Date.now();
-        $('sync-bar').classList.add('syncing');
-    }, delay);
-}
-function hideSync() {
-    clearTimeout(syncShowTimer);
-    if (syncShownAt) {
-        const wait = Math.max(0, 450 - (Date.now() - syncShownAt));
-        clearTimeout(syncHideTimer);
-        syncHideTimer = setTimeout(() => {
-            $('sync-bar').classList.remove('syncing');
-            syncShownAt = 0;
-        }, wait);
-        return;
-    }
-    $('sync-bar').classList.remove('syncing');
-}
-
-/* Targeted feedback: pulse the row an action touched (green sweep) so the
-   eye lands exactly where the change happened instead of scanning the page. */
-function pulseRow(key) {
-    const sel = 'tbody tr[data-key="' +
-        ((window.CSS && CSS.escape) ? CSS.escape(String(key)) : String(key).replace(/["\\]/g, '\\$&')) + '"]';
-    document.querySelectorAll(sel).forEach((tr) => {
-        tr.classList.remove('row-done');
-        void tr.offsetWidth;
-        tr.classList.add('row-done');
-        tr.addEventListener('animationend', () => tr.classList.remove('row-done'), { once: true });
-    });
-}
-
 async function refreshAll(opts = {}) {
     if (!token()) return;
     // Coalesce bursts (socket storms) into one fetch so the page never
     // thrashes with overlapping refreshes.
     if (refreshInFlight) { refreshQueued = true; return; }
     refreshInFlight = true;
-    if (opts.showBar) showSync({ instant: true });
     try {
         const [reports, approvals, drivers, incidents, dispatches, trips, users, stats] = await Promise.all([
             api('/api/reports').catch(() => state.reports),
@@ -1571,7 +1490,6 @@ async function refreshAll(opts = {}) {
         safe(renderCounts, 'counts');
     } finally {
         refreshInFlight = false;
-        if (opts.showBar) hideSync();
         if (refreshQueued) { refreshQueued = false; refreshAll(opts).catch(() => {}); }
     }
 }
@@ -1686,7 +1604,6 @@ async function approveDriver(id) {
         const res = await api('/api/admin/driver-requests/' + id + '/approve', { method: 'POST' });
         toast((res && res.message) || 'Driver approved.');
         await refreshAll();
-        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1699,7 +1616,6 @@ async function rejectDriver(id) {
         });
         toast('Driver rejected.');
         await refreshAll();
-        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1739,7 +1655,7 @@ function renderIncidents() {
     if (stale(body, fp)) {
         // Column 6 (TTL) ticks with time — update it silently (no flash).
         reconcileTbody(body, rows, (r) => r.id, incidentCells,
-            { cols: 7, empty: '🗺️ No incidents reported yet.', silentCols: [6] });
+            { cols: 7, empty: '🗺️ No incidents reported yet.' });
         commit(body, fp);
     }
     setText($('incidents-count'), rows.length + ' of ' + state.incidents.length);
@@ -2003,7 +1919,6 @@ async function setAvailability(id, availability, el) {
         await api('/api/users/' + id + '/availability', { method: 'PATCH', body: JSON.stringify({ availability }) });
         toast('Vehicle availability set to ' + availability + '.');
         await refreshAll();
-        pulseRow(id);
     } catch (err) {
         toast(err.message, 'error');
         if (el) el.value = availability === 'AVAILABLE' ? 'OFFLINE' : 'AVAILABLE';
@@ -2051,7 +1966,6 @@ async function reopenDispatch(id) {
         await api('/api/admin/dispatches/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'available' }) });
         toast('Assignment released and re-opened for drivers.');
         await refreshAll();
-        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -2061,7 +1975,6 @@ async function cancelDispatch(id) {
         await api('/api/admin/dispatches/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status: 'cancelled' }) });
         toast('Assignment cancelled. The assigned driver has been released.');
         await refreshAll();
-        pulseRow(id);
     } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -2168,11 +2081,9 @@ if (typeof io === 'function') {
 }
 
 /* Quiet background tick: ages relative timestamps ("2m ago") and doubles as a
-   safety net if the socket ever drops. Flash cues are suppressed here — only
-   real-time events light up individual cells. */
+   safety net if the socket ever drops. */
 setInterval(() => {
-    flashCells = false;
-    refreshAll().catch(() => {}).finally(() => { flashCells = true; });
+    refreshAll().catch(() => {});
 }, 60000);
 
 /* ── Boot ────────────────────────────────────────────────────── */
