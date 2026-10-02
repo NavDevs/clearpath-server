@@ -1472,7 +1472,7 @@ $('refresh-btn').addEventListener('click', async () => {
     const btn = $('refresh-btn');
     btn.disabled = true;
     btn.classList.add('spinning');
-    try { await refreshAll(); toast('Dashboard refreshed.'); }
+    try { await refreshAll({ showBar: true }); toast('Dashboard refreshed.'); }
     catch (err) { toast(err.message, 'error'); }
     finally { btn.disabled = false; btn.classList.remove('spinning'); }
 });
@@ -1481,20 +1481,21 @@ $('refresh-btn').addEventListener('click', async () => {
 let refreshInFlight = false;
 let refreshQueued = false;
 
-/* The sync sweep only appears when a request is actually slow (>250ms).
-   Fast actions complete silently: a toast plus a green pulse on the exact
-   row that changed — the page itself never looks like it is reloading. */
+/* The sync sweep belongs to the manual Refresh button ONLY. Background
+   refreshes (sockets, TTL countdown, 60s tick) swap values in place —
+   no sweep, no flash, nothing that looks like the page is reloading. */
 let syncShownAt = 0;
 let syncHideTimer = null;
 let syncShowTimer = null;
 
-function showSync() {
+function showSync(opts) {
     clearTimeout(syncHideTimer);
     clearTimeout(syncShowTimer);
+    const delay = opts && opts.instant ? 0 : 250;
     syncShowTimer = setTimeout(() => {
         if (!syncShownAt) syncShownAt = Date.now();
         $('sync-bar').classList.add('syncing');
-    }, 250);
+    }, delay);
 }
 function hideSync() {
     clearTimeout(syncShowTimer);
@@ -1523,13 +1524,13 @@ function pulseRow(key) {
     });
 }
 
-async function refreshAll() {
+async function refreshAll(opts = {}) {
     if (!token()) return;
     // Coalesce bursts (socket storms) into one fetch so the page never
     // thrashes with overlapping refreshes.
     if (refreshInFlight) { refreshQueued = true; return; }
     refreshInFlight = true;
-    showSync();
+    if (opts.showBar) showSync({ instant: true });
     try {
         const [reports, approvals, drivers, incidents, dispatches, trips, users, stats] = await Promise.all([
             api('/api/reports').catch(() => state.reports),
@@ -1570,8 +1571,8 @@ async function refreshAll() {
         safe(renderCounts, 'counts');
     } finally {
         refreshInFlight = false;
-        hideSync();
-        if (refreshQueued) { refreshQueued = false; refreshAll().catch(() => {}); }
+        if (opts.showBar) hideSync();
+        if (refreshQueued) { refreshQueued = false; refreshAll(opts).catch(() => {}); }
     }
 }
 
