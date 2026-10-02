@@ -1355,6 +1355,22 @@ app.get('/health', async (req, res) => {
   });
 });
 
+// ── NEVER RETURN HTML FROM THE API ────────────────────────────────
+// The mobile apps JSON-decode every API response; an HTML 404 or error page
+// would surface as a raw parse error on the login screen. Unmatched API
+// routes and unhandled errors always answer with JSON instead.
+
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('[ClearPath] Unhandled API error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal server error. Please try again.' });
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\n=== ClearPath Command Server v1.0 ===');
