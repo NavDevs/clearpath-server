@@ -150,7 +150,14 @@ curl http://localhost:3000/health
 # { status: "ok", uptime: ..., dataEpoch: ... }
 ```
 
-- **Dashboard:** open `http://localhost:3000/` and sign in with the admin credentials.
+- **Dashboard:** open `http://localhost:3000/` and sign in with the admin credentials:
+
+  | Field | Value |
+  |-------|-------|
+  | **Username** | `admin` |
+  | **Password** | `clearpath123` |
+
+  These are the built-in defaults (`server.js`); override them with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` environment variables. They are intentionally **not displayed on the login page**.
 - **Data wipe (dev):** `POST /api/admin/reset-data` or `node scripts/reset-data.js` — bumps `dataEpoch`, which both apps detect and use to sign users out.
 
 ### Tests / checks
