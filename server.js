@@ -823,15 +823,8 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
   }
 });
 
-// Admin endpoint to update a report's stored status
-app.post('/api/reports/:id/status', async (req, res) => {
-  const { status } = req.body;
-  await dbRun('UPDATE road_reports SET status = ? WHERE id = ?', [status, req.params.id]);
-  const updatedReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [req.params.id]);
-  io.emit('report_updated', withExpiry(updatedReport));
-  notifyAdmin();
-  res.json(updatedReport);
-});
+// Legacy POST /api/reports/:id/status (manual "resolve" from stale cached
+// pages, no resolved_at stamp) was removed: incident lifecycle is TTL-only.
 
 // DISPATCHES & ACCEPTANCE (atomic first-driver-wins)
 app.post('/api/dispatches/:id/accept', async (req, res) => {
@@ -1035,7 +1028,9 @@ app.patch('/api/trips/:id/status', async (req, res) => {
       await dbRun("UPDATE dispatches SET status = 'completed' WHERE id = ?", [updatedTrip.dispatch_id]);
     }
     if (updatedTrip.report_id) {
-      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved' WHERE id = ?", [updatedTrip.report_id]);
+      // Stamp resolved_at (once) so the 48h retention clock starts and the
+      // purge job can find the row — a completed response IS a resolution.
+      await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved', resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP) WHERE id = ?", [updatedTrip.report_id]);
       const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
       if (incident) io.emit('report_updated', withExpiry(incident));
     }
@@ -1332,18 +1327,18 @@ async function runDispatchSweeper() {
   }
 }
 
+// Every row that is RESOLVED but missing resolved_at gets its 48h clock now
+// (legacy writers) so it purges instead of lingering forever. Runs on every
+// sweep, not just at boot.
+const backfillResolvedAt = () =>
+  dbRun("UPDATE road_reports SET resolved_at = CURRENT_TIMESTAMP WHERE lifecycle_state IN ('RESOLVED', 'REJECTED') AND resolved_at IS NULL")
+    .catch((err) => console.error('[ClearPath] resolved_at backfill failed:', err.message || err));
+
 // The sweeps must never take the server down.
 const runSweepsSafely = () =>
-  Promise.all([runExpiryEngine(), runDispatchSweeper(), runPurgeEngine()])
+  Promise.all([backfillResolvedAt(), runExpiryEngine(), runDispatchSweeper(), runPurgeEngine()])
     .catch((err) => console.error('[ClearPath] Sweep failed:', err.message || err));
 initPromise.then(async () => {
-  // Legacy rows resolved before resolved_at existed: start their 48h clock now
-  // so even those eventually get purged instead of lingering forever.
-  try {
-    await dbRun("UPDATE road_reports SET resolved_at = CURRENT_TIMESTAMP WHERE lifecycle_state IN ('RESOLVED', 'REJECTED') AND resolved_at IS NULL");
-  } catch (err) {
-    console.error('[ClearPath] resolved_at backfill failed:', err.message || err);
-  }
   runSweepsSafely();
   setInterval(runSweepsSafely, 2 * 60 * 1000);
 });

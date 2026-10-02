@@ -129,15 +129,10 @@ Submit a new road report with optional photo.
 
 ---
 
-### POST /api/reports/:id/status
-Update report status (admin only).
-
-**Request:**
-```json
-{ "status": "resolved" }
-```
-
-**Status values:** `pending`, `resolved`, `rejected`
+### POST /api/reports/:id/status — REMOVED
+Incident lifecycle is time-based only (TTL engine). Manual status/resolve
+endpoints were removed so nothing can flip an incident's lifecycle by hand;
+stale cached pages calling this endpoint now receive 404.
 
 ---
 
