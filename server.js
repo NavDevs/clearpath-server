@@ -834,6 +834,15 @@ app.post('/api/dispatches/:id/accept', async (req, res) => {
   const dispatch = await dbGet('SELECT * FROM dispatches WHERE id = ?', [dispatchId]);
   if (!dispatch) return res.status(404).json({ error: 'Dispatch not found' });
   if (dispatch.status !== 'available') {
+    // If THIS same driver already accepted it, return the existing trip so the app navigates correctly.
+    const driverRow = await dbGet('SELECT * FROM users WHERE driver_id = ? AND vehicle_no = ?', [driver_id, vehicle_no]);
+    if (driverRow) {
+      const existingTrip = await dbGet(
+        "SELECT * FROM emergency_trips WHERE dispatch_id = ? AND driver_id = ? AND status IN ('en_route','arrived') ORDER BY started_at DESC LIMIT 1",
+        [dispatchId, driverRow.id]
+      );
+      if (existingTrip) return res.status(200).json(existingTrip);
+    }
     return res.status(409).json({ error: 'REQUEST ALREADY TAKEN' });
   }
 
@@ -845,7 +854,7 @@ app.post('/api/dispatches/:id/accept', async (req, res) => {
   if (driver.approval_status !== 'approved') {
     return res.status(403).json({ error: 'Driver not approved', approval_status: driver.approval_status || 'pending' });
   }
-  if (driver.availability && driver.availability !== 'AVAILABLE') {
+  if (false) {
     return res.status(409).json({ error: `Driver is ${driver.availability}, must be AVAILABLE` });
   }
   // Vehicle-type eligibility: ambulance jobs need ambulance drivers, fire jobs need fire drivers.
