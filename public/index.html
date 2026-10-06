@@ -939,7 +939,7 @@ body, .sidebar, .card, .stat-card, .modal, .toast, th, td, .header-time,
                 <div>🔧 Road Work</div><div><span>4 hrs</span></div>
                 <div>⚠️ Other</div><div><span>4 hrs</span></div>
             </div>
-            <div style="margin-top:8px;font-size:10px;color:var(--muted-fg);line-height:1.5">Resolved incidents stay 48 hrs, then are purged forever.</div>
+            <div style="margin-top:8px;font-size:10px;color:var(--muted-fg);line-height:1.5">Resolved incidents are purged from the database and photo storage immediately — only live incidents are listed here.</div>
         </div>
 
         <div class="sidebar-footer">
@@ -1759,8 +1759,9 @@ async function rejectDriver(id) {
 
 /* ── Incidents ───────────────────────────────────────────────── */
 // Lifecycle is fully time-based: the TTL engine resolves each incident when
-// its duration ends and the server purges it 48h later. There are no action
-// buttons at all — click the row to see the full server-side timeline.
+// its duration ends and the server purges it (with photo and linked rows)
+// on the next sweep. Resolved incidents are never listed here. There are no
+// action buttons at all — click the row to see the full server-side timeline.
 function incidentCells(r) {
     const photo = r.photo_url
         ? '<img src="' + esc(r.photo_url) + '" class="report-photo" onclick="showPhoto(\'' + esc(r.photo_url) + '\')" title="Click to view" alt="Incident photo">'

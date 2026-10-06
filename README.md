@@ -19,7 +19,7 @@ Central cloud backend for **Roadly** (citizen road-hazard reporting) and **Signa
 
 ### Time-Based Incident Lifecycle (fully automatic)
 - Every incident type auto-resolves when its TTL ends: accident 2h · fire 1h · congestion 3h · blocked 4h · flooding 6h · roadwork/other 4h · pothole 48h
-- Resolved incidents stay visible for a **48h retention window** (with a purge countdown for admins), then are hard-deleted by the purge engine
+- Resolved incidents are purged immediately (row, dispatches, trips, rewards, AI analysis and photo deleted; never shown on the dashboard)
 - No manual resolve/reject anywhere — a background sweep engine (every 2 minutes) expires, stamps, and purges rows
 - Legacy status-bypass endpoints are removed so the clock cannot be skipped
 

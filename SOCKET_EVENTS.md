@@ -58,7 +58,7 @@ const socket = io('https://clearpath-server.onrender.com', {
 ---
 
 ### `report_deleted`
-**Trigger:** Retention purge — 48h after an incident became RESOLVED (hard delete)  
+**Trigger:** Retention purge — right after an incident became RESOLVED (hard delete)  
 **Audience:** Roadly citizens, Admin dashboard  
 **Payload:**
 
