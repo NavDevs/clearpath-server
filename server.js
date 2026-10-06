@@ -431,13 +431,10 @@ app.get('/api/admin/users', authMiddleware, requireRole('admin'), async (req, re
 
 // Get all incidents (for admin)
 app.get('/api/admin/incidents', authMiddleware, requireRole('admin'), async (req, res) => {
-  // Resolved/rejected incidents are never shown: they are purged from the
-  // database (and photo storage) on the next sweep instead of lingering.
   const incidents = await dbAll(`
     SELECT r.*, u.name as reporter_name, u.phone as reporter_phone
     FROM road_reports r
     LEFT JOIN users u ON r.user_id = u.id
-    WHERE r.lifecycle_state NOT IN ('RESOLVED', 'REJECTED')
     ORDER BY r.created_at DESC
   `);
   // withExpiry adds ttl_hours / expires_at / (when resolved) removes_at so the
@@ -521,8 +518,8 @@ app.patch('/api/admin/dispatches/:id/status', authMiddleware, requireRole('admin
 });
 
 // Incident state transitions are TIME-BASED only: the TTL engine resolves
-// each incident when its duration ends, and the purge job hard-deletes it
-// (with its dispatches, trips, rewards and photo) on the next sweep. Manual status/lifecycle/resolve/reject endpoints were removed on
+// each incident when its duration ends, and the purge job hard-deletes it 48h
+// later. Manual status/lifecycle/resolve/reject endpoints were removed on
 // purpose Ã¢â‚¬â€ nothing human approves an incident's lifecycle anymore.
 
 // Admin: Re-activate an incident and (for accident/fire) ensure a dispatch exists
@@ -703,12 +700,11 @@ const DURATION_HOURS = {
   flooding: 6, pothole: 48, roadwork: 4, other: 4, default: 4,
 };
 
-// Once an incident is RESOLVED/REJECTED it is purged almost immediately: the
-// purge job hard-deletes it from the database — and its photo from storage —
-// forever on the next sweep (≤2 min), and resolved rows are never served to
-// the dashboard. Retention is zero by design: resolved issues must vanish,
-// not linger as rows.
-const RESOLVED_RETENTION_HRS = 0;
+// Once an incident is RESOLVED it stays in the database AND on the dashboard
+// for this long (with a live "until purge" countdown for admins) so the data
+// remains validatable — then the purge job hard-deletes it from the database
+// and its photo from storage, forever.
+const RESOLVED_RETENTION_HRS = 48;
 
 function durationHoursFor(type) {
   return DURATION_HOURS[String(type || '').toLowerCase()] || DURATION_HOURS.default;
@@ -1046,7 +1042,7 @@ app.patch('/api/trips/:id/status', async (req, res) => {
       await dbRun("UPDATE dispatches SET status = 'completed' WHERE id = ?", [updatedTrip.dispatch_id]);
     }
     if (updatedTrip.report_id) {
-      // Stamp resolved_at (once) so the retention clock starts and the
+      // Stamp resolved_at (once) so the 48h retention clock starts and the
       // purge job can find the row Ã¢â‚¬â€ a completed response IS a resolution.
       await dbRun("UPDATE road_reports SET lifecycle_state = 'RESOLVED', status = 'resolved', resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP) WHERE id = ?", [updatedTrip.report_id]);
       const incident = await dbGet('SELECT * FROM road_reports WHERE id = ?', [updatedTrip.report_id]);
@@ -1283,11 +1279,12 @@ async function runExpiryEngine() {
   }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ RETENTION PURGE (right after RESOLVED) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-// A resolved incident disappears almost immediately: its photo is dropped
-// from storage and the row — plus its dispatches, trips, reward and AI rows —
-// is hard-deleted from the database on the next sweep. Same 2-minute sweep
-// as the expiry engine.
+// Ã¢â€â‚¬Ã¢â€â‚¬ RETENTION PURGE (48h after RESOLVED) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// A resolved incident stays on the dashboard for 48 hours, then disappears
+// forever: its photo is dropped from storage and the row — plus its
+// dispatches, trips, reward and AI rows — is hard-deleted from the database.
+// Same 2-minute sweep as the expiry engine. Child rows are deleted first so
+// the plain (non-cascade) FKs can never block the purge.
 async function runPurgeEngine() {
   const done = await dbAll(
     "SELECT id, photo_url, resolved_at FROM road_reports WHERE lifecycle_state IN ('RESOLVED', 'REJECTED') AND resolved_at IS NOT NULL"
@@ -1354,7 +1351,7 @@ async function runDispatchSweeper() {
   }
 }
 
-// Every row that is RESOLVED but missing resolved_at gets stamped now
+// Every row that is RESOLVED but missing resolved_at gets its 48h clock now
 // (legacy writers) so it purges instead of lingering forever. Runs on every
 // sweep, not just at boot.
 const backfillResolvedAt = () =>
@@ -1403,6 +1400,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('\n=== ClearPath Command Server v1.0 ===');
   console.log(`   Dashboard : http://localhost:${PORT}`);
   console.log(`   Incidents : post -> visible -> auto-resolve | dispatch: immediate on accident/fire`);
-  console.log(`   TTL rules : accident=2h | fire=1h | congestion=3h | blocked=4h | flooding=6h | pothole=48h | roadwork/other=4h | resolved retention=immediate\n`);
+  console.log(`   TTL rules : accident=2h | fire=1h | congestion=3h | blocked=4h | flooding=6h | pothole=48h | roadwork/other=4h | resolved retention=48h\n`);
 });
 

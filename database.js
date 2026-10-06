@@ -123,7 +123,7 @@ async function ensureSqliteSchema(db) {
   // Incident lifecycle (ACTIVE -> ... -> RESOLVED) and driver reference.
   await migrate("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'ACTIVE'");
   await migrate('ALTER TABLE road_reports ADD COLUMN driver_id TEXT');
-  // When the TTL engine resolved it: starts the retention clock that
+  // When the TTL engine resolved it: starts the 48h retention window that
   // ends with the row (and its photo) being purged forever.
   await migrate('ALTER TABLE road_reports ADD COLUMN resolved_at TIMESTAMP');
 
@@ -245,7 +245,7 @@ async function initDb() {
       await client.query("ALTER TABLE road_reports ADD COLUMN lifecycle_state TEXT DEFAULT 'ACTIVE'");
     } catch (e) {}
 
-    // TTL retention clock: set when the engine resolves; drives the purge.
+    // TTL retention clock: set when the engine resolves; drives the 48h purge.
     try {
       await client.query("ALTER TABLE road_reports ADD COLUMN resolved_at TIMESTAMP");
     } catch (e) {}
