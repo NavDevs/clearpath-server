@@ -51,6 +51,7 @@ async function initSqliteDb() {
           longitude REAL,
           address TEXT,
           photo_url TEXT,
+          photo_data TEXT,
           points INTEGER DEFAULT 0,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )`,
@@ -126,6 +127,7 @@ async function ensureSqliteSchema(db) {
   // When the TTL engine resolved it: starts the 48h retention window that
   // ends with the row (and its photo) being purged forever.
   await migrate('ALTER TABLE road_reports ADD COLUMN resolved_at TIMESTAMP');
+  await migrate('ALTER TABLE road_reports ADD COLUMN photo_data TEXT');
 
   // Live emergency response columns on trips.
   await migrate('ALTER TABLE emergency_trips ADD COLUMN dispatch_id TEXT');
@@ -194,8 +196,10 @@ async function ensureSqliteSchema(db) {
 
 async function initDb() {
   try {
+    if (!process.env.DATABASE_URL) throw new Error("No DATABASE_URL");
     pool = createPgPool();
     const client = await pool.connect();
+    await client.query("SELECT 1");
     await client.query(`CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       role TEXT CHECK(role IN ('citizen', 'emergency_driver', 'admin')),
@@ -217,6 +221,7 @@ async function initDb() {
     } catch (e) {}
 
     try { await client.query("ALTER TABLE users ADD COLUMN availability TEXT DEFAULT 'OFFLINE'"); } catch(e) {}
+    try { await client.query("ALTER TABLE road_reports ADD COLUMN photo_data TEXT"); } catch(e) {}
 
     // Add driver-specific columns if they don't exist
     try { await client.query("ALTER TABLE users ADD COLUMN driver_id TEXT UNIQUE"); } catch(e) {}
@@ -326,7 +331,8 @@ async function initDb() {
     console.log('Postgres Database Initialized (ClearPath v2 Schema).');
     return;
   } catch (err) {
-    console.warn('Postgres unavailable, falling back to SQLite:', err.message || err);
+    console.warn('Postgres unavailable or over quota, falling back to SQLite:', err.message || err);
+    if (pool) { try { await pool.end(); } catch (_) {} pool = null; }
     useSqlite = true;
     await initSqliteDb();
   }

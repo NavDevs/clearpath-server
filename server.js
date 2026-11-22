@@ -32,6 +32,8 @@ const { randomUUID: uuidv4 } = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
+let sharp;
+try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { dbRun, dbGet, dbAll, initPromise, getDataEpoch, bumpDataEpoch } = require('./database');
 const { resetAllDataAndPhotos } = require('./maintenance');
 
@@ -40,7 +42,7 @@ const { resetAllDataAndPhotos } = require('./maintenance');
 const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
   : null;
-if (!supabase) console.warn('[ClearPath] Supabase storage not configured - report photos will be skipped.');
+if (!supabase) console.log('[ClearPath] Self-contained photo storage active (photos saved permanently in database).');
 
 const SALT_ROUNDS = 10;
 const JWT_SECRET = process.env.JWT_SECRET || 'clearpath-dev-secret-change-in-production';
@@ -685,6 +687,28 @@ app.get('/api/admin/stats', authMiddleware, requireRole('admin'), async (req, re
     }
   });
 });
+app.get('/api/reports/:id/photo', async (req, res) => {
+  try {
+    const report = await dbGet('SELECT photo_data, photo_url FROM road_reports WHERE id = ?', [req.params.id]);
+    if (!report || (!report.photo_data && !report.photo_url)) {
+      return res.status(404).send('Photo not found');
+    }
+    if (report.photo_data) {
+      const imgBuffer = Buffer.from(report.photo_data, 'base64');
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.send(imgBuffer);
+    }
+    if (report.photo_url && report.photo_url.startsWith('http')) {
+      return res.redirect(report.photo_url);
+    }
+    res.status(404).send('Photo not found');
+  } catch (err) {
+    console.error('Failed to get report photo:', err);
+    res.status(500).send('Error loading photo');
+  }
+});
+
 app.get('/api/reports', async (req, res) => {
   const reports = await dbAll('SELECT * FROM road_reports ORDER BY created_at DESC');
   res.json(reports.map(withExpiry));
@@ -758,21 +782,41 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
 
     const id = uuidv4();
     let photo_url = null;
+    let photo_data = null;
 
-    if (req.file && supabase) {
-      const fileName = `${id}-${Date.now()}${path.extname(req.file.originalname)}`;
-      const { error } = await supabase.storage
-        .from(BUCKET)
-        .upload(fileName, req.file.buffer, { contentType: req.file.mimetype, upsert: false });
+    if (req.file) {
+      try {
+        let buffer = req.file.buffer;
+        if (sharp) {
+          try {
+            buffer = await sharp(req.file.buffer)
+              .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+              .jpeg({ quality: 75 })
+              .toBuffer();
+          } catch (sharpErr) {
+            console.warn('[ClearPath] Image compression warning:', sharpErr.message);
+          }
+        }
+        photo_data = buffer.toString('base64');
+        photo_url = `/api/reports/${id}/photo`;
 
-      if (!error) {
-        const { data } = supabase.storage.from(BUCKET).getPublicUrl(fileName);
-        photo_url = data.publicUrl;
-      } else {
-        console.error('Supabase upload error:', error);
+        if (supabase) {
+          try {
+            const fileName = `${id}-${Date.now()}${path.extname(req.file.originalname || '.jpg')}`;
+            const { error } = await supabase.storage
+              .from(BUCKET)
+              .upload(fileName, buffer, { contentType: 'image/jpeg', upsert: false });
+            if (!error) {
+              const { data } = supabase.storage.from(BUCKET).getPublicUrl(fileName);
+              if (data && data.publicUrl) photo_url = data.publicUrl;
+            }
+          } catch (sbErr) {
+            console.warn('[ClearPath] Supabase storage mirror failed:', sbErr.message);
+          }
+        }
+      } catch (photoErr) {
+        console.error('[ClearPath] Photo processing error:', photoErr);
       }
-    } else if (req.file) {
-      console.warn('Photo upload skipped: Supabase storage is not configured.');
     }
 
     // Spec: initial incident status must be ACTIVE.
@@ -786,9 +830,9 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     const normType = typeMap[rawType] || 'other';
     const pts = Number(points) || 0;
     await dbRun(`INSERT INTO road_reports
-      (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
-      [id, user_id, normType, description, latitude, longitude, address, photo_url, pts]
+      (id, user_id, type, description, latitude, longitude, address, photo_url, photo_data, points, lifecycle_state, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
+      [id, user_id, normType, description, latitude, longitude, address, photo_url, photo_data, pts]
     );
 
     const newReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [id]);
