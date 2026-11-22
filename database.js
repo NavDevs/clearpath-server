@@ -179,6 +179,7 @@ async function ensureSqliteSchema(db) {
       longitude REAL,
       address TEXT,
       photo_url TEXT,
+      photo_data TEXT,
       points INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       lifecycle_state TEXT DEFAULT 'ACTIVE',
@@ -192,6 +193,8 @@ async function ensureSqliteSchema(db) {
     await run('DROP TABLE road_reports_legacy');
     console.log('SQLite: road_reports rebuilt to allow the REJECTED lifecycle.');
   }
+  // Ensure photo_data exists even after rebuild
+  await migrate('ALTER TABLE road_reports ADD COLUMN photo_data TEXT');
 }
 
 async function initDb() {

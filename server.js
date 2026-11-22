@@ -829,11 +829,24 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     };
     const normType = typeMap[rawType] || 'other';
     const pts = Number(points) || 0;
-    await dbRun(`INSERT INTO road_reports
-      (id, user_id, type, description, latitude, longitude, address, photo_url, photo_data, points, lifecycle_state, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
-      [id, user_id, normType, description, latitude, longitude, address, photo_url, photo_data, pts]
-    );
+    try {
+      await dbRun(`INSERT INTO road_reports
+        (id, user_id, type, description, latitude, longitude, address, photo_url, photo_data, points, lifecycle_state, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
+        [id, user_id, normType, description, latitude, longitude, address, photo_url, photo_data, pts]
+      );
+    } catch (insertErr) {
+      if (insertErr.message && insertErr.message.includes('photo_data')) {
+        console.warn('[ClearPath] photo_data column missing, falling back to standard insert:', insertErr.message);
+        await dbRun(`INSERT INTO road_reports
+          (id, user_id, type, description, latitude, longitude, address, photo_url, points, lifecycle_state, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'pending')`,
+          [id, user_id, normType, description, latitude, longitude, address, photo_url, pts]
+        );
+      } else {
+        throw insertErr;
+      }
+    }
 
     const newReport = await dbGet('SELECT * FROM road_reports WHERE id = ?', [id]);
 
@@ -864,7 +877,7 @@ app.post('/api/reports', upload.single('photo'), async (req, res) => {
     res.json(withExpiry(newReport));
   } catch (err) {
     console.error('POST /api/reports failed:', err);
-    res.status(400).json({ error: 'Could not submit report. Please try again.' });
+    res.status(400).json({ error: err.message || 'Could not submit report. Please try again.' });
   }
 });
 
